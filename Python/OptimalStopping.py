@@ -170,7 +170,7 @@ class OptimalStopping:
     #         out = self.solveBatch()
     #     return out
 
-    # def solveBatch(self):
+    # def solveBatch(self): 
     #     pass
 
 class DeepOptS(OptimalStopping):
