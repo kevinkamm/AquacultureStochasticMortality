@@ -2,10 +2,18 @@ import numpy as np
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
 
+import tensorflow as tf
+from tensorflow.keras import Model, Sequential, Input
+from tensorflow.keras.layers import Layer,BatchNormalization, Dense, Reshape, Activation, Flatten
+# from tensorflow.keras.losses import BinaryCrossentropy, MeanSquaredError
+from tensorflow.keras.optimizers import Adam
+from tqdm.keras import TqdmCallback
+from tqdm import tqdm
+
 from joblib import Parallel,delayed
 from psutil import cpu_count
 
-from typing import Optional, Callable, Generator
+from typing import Optional, Callable, Generator, List
 from numpy.typing import DTypeLike
 
 num_cores=cpu_count(logical=False)
@@ -32,20 +40,127 @@ class Polynomial(Basis):
         self.poly_reg_model.fit(poly_features, Y)
         self.poly_reg_model.predict(poly_features)
         return self.poly_reg_model.predict(poly_features)
+    
+class DeepOS(Model):
+    def __init__(self, 
+                d:int = 1, # dimension of process
+                N:int = 2, # number of time steps
+                latent_dim: List[int]=[51], 
+                outputDims: int=1, 
+                name="deeposnet", 
+                **kwargs
+                ) \
+            -> None:
+        super().__init__(name=name,**kwargs)
+        self.latent_dim = latent_dim
+        self.outputDims = outputDims
+        self.d = d+1 # since price adds a dimension
+        self.N = N-1 # stopping at t=N excluded
+        self.D = []
+        self.Rbefore=[Flatten(name='reshape01')]
+        # self.Rbefore=[Reshape((self.N*self.d,), name='reshape01')]
+        self.BN=[BatchNormalization(epsilon=1e-6,axis=-1,momentum=0.9)]
+        self.Rafter=[Reshape((self.N , self.d), name='reshape02')]
+        self.A=[]
+        for i, hD in enumerate(self.latent_dim):
+            self.D.append(Dense(units=hD,activation=None,name=f'dense{i + 1}'))
+            self.Rbefore.append(Flatten(name=f'reshape{i + 1}1'))
+            # self.Rbefore.append(Reshape((self.N*hD,),name=f'reshape{i + 1}1'))
+            self.BN.append(BatchNormalization(epsilon=1e-6, axis=-1, momentum=0.9))
+            self.Rafter.append(Reshape((self.N, hD), name=f'reshape{i + 1}2'))
+            self.A.append(Activation('relu'))
+        i += 1
+        self.D.append(Dense(units=self.outputDims,activation=None,name='denseout'))
+        self.Rbefore.append(Flatten(name=f'reshape{i + 1}1'))
+        # self.Rbefore.append(Reshape((self.N*self.outputDims,),name=f'reshape{i + 1}1'))
+        self.BN.append(BatchNormalization(epsilon=1e-6,axis=-1,momentum=0.9))
+        self.Rafter.append(Reshape((self.N, self.outputDims), name=f'reshape{i + 1}2'))
+        self.A.append(Activation('sigmoid'))
+
+    def call(self,inputs,training=True):
+        x=self.Rbefore[0](inputs)
+        x=self.BN[0](x)
+        x=self.Rafter[0](x)
+        for i in range(1,len(self.BN)):
+            x=self.D[i-1](x)
+            x=self.Rbefore[i](x)
+            x=self.BN[i](x)
+            x=self.Rafter[i](x)
+            x=self.A[i-1](x)
+        return x
+
+    def train_step(self,data):
+        # data shape = (Batch,Processes+Price,Time)
+        p=data[:,-1,:]
+        with tf.GradientTape() as tape:
+            nets = self(data[:,:,:-1],training=True)
+            nets = tf.transpose(nets,(0,2,1))
+            u_list = [nets[:, :, 0]]
+            u_sum = u_list[-1]
+            for k in range(1, self.N):
+                u_list.append(nets[:, :, k] * (1. - u_sum))
+                u_sum += u_list[-1]
+
+            u_list.append(1. - u_sum)
+            u_stack = tf.concat(u_list, axis=1)
+            # p = tf.squeeze(p, axis=1)
+            loss = tf.reduce_mean(tf.reduce_sum(-u_stack * p, axis=1))
+            # loss = self.compiled_loss(tf.reduce_sum(-u_stack * p, axis=1),0,regularization_losses=self.losses)
+
+        var_list = self.trainable_variables
+        gradients = tape.gradient(loss,var_list)
+        self.optimizer.apply_gradients(zip(gradients,var_list))
+
+        idx = tf.argmax(tf.cast(tf.cumsum(u_stack, axis=1) + u_stack >= 1,
+                                dtype=tf.uint8),
+                        axis=1,
+                        output_type=tf.int32)
+        batch_size=data.shape[0]
+        stopped_payoffs = tf.reduce_mean(tf.gather_nd(p, tf.stack([tf.range(0, batch_size, dtype=tf.int32), idx],
+                                                                  axis=1)))
+        return {'loss':loss, 'payoff':stopped_payoffs}
+
+    def predict_step(self,data):
+        # data shape = (Batch,Processes+Price,Time), Price Last
+        p=data[:,-1,:] # shape= (Batch,Time)
+        nets = self(data[:,:,:-1],training=False)
+        nets = tf.transpose(nets,(0,2,1))
+        u_list = [nets[:, :, 0]]
+        u_sum = u_list[-1]
+        for k in range(1, self.N):
+            u_list.append(nets[:, :, k] * (1. - u_sum))
+            u_sum += u_list[-1]
+
+        u_list.append(1. - u_sum)
+        u_stack = tf.concat(u_list, axis=1)
+        # p = tf.squeeze(p, axis=1)
+
+        idx = tf.argmax(tf.cast(tf.cumsum(u_stack, axis=1) + u_stack >= 1,
+                                dtype=tf.uint8),
+                        axis=1,
+                        output_type=tf.int32)
+        batch_size=data.shape[0]
+        stopped_payoffs = tf.gather_nd(p, tf.stack([tf.range(0, batch_size, dtype=tf.int32), idx],
+                                                                  axis=1))
+
+        tau = tf.reshape(tf.range(0,self.N+1) ,(1,-1))*tf.ones((batch_size,1),dtype=tf.int32)
+        stopped_index = tf.gather_nd(tau, tf.stack([tf.range(0, batch_size, dtype=tf.int32), idx],
+                                        axis=1))
+        return stopped_index, stopped_payoffs
 
 class OptimalStopping:
     def __init__(self,
                  r:float,
                  t:np.ndarray,
-                 gen:Callable) -> None:
+                 gen:Callable[[int], np.ndarray]) -> None:
         self.r=r
         self.t=t
         self.gen=gen
 
-    def train(self,batch_size,batches:int):
+    def train(self,batch_size:int,batches:int):
         pass
 
-    def evaluate(self,batch_size,batches:int):
+    def evaluate(self,batch_size:int,batches:int):
         pass
 
     # def solve(self):
@@ -58,6 +173,46 @@ class OptimalStopping:
     # def solveBatch(self):
     #     pass
 
+class DeepOptS(OptimalStopping):
+    def __init__(self, 
+                 r: float, 
+                 t: np.ndarray, 
+                 gen: Callable[[int], np.ndarray],
+                 d:int ) -> None:
+        super().__init__(r, t, gen)
+        self.N=t.size
+        self.d=d
+        self.lr_values = [0.05, 0.005, 0.0005]
+        self.neurons = [d + 50, d + 50]
+        self.train_steps = 3000 + d
+        self.lr_boundaries = [int(500 + d / 5), int(1500 + 3 * d / 5)]
+        self.learning_rate_fn = tf.keras.optimizers.schedules.PiecewiseConstantDecay(self.lr_boundaries, self.lr_values)
+        self.opt = Adam(self.learning_rate_fn,beta_1=0.9,beta_2=0.999,epsilon=1e-8)
+        self.model = DeepOS(d=d,N=self.N,latent_dim=self.neurons)
+        self.model.compile(optimizer=self.opt, jit_compile=True, run_eagerly=False)
+    
+    def train(self,batch_size:int,batches:int):
+        def datagen():
+            while True:
+                X,V,_,_ = self.gen(batch_size)
+                yield np.concatenate([X,np.expand_dims(V,axis=2)],axis=2).transpose((1,2,0))
+        dataset = tf.data.Dataset.from_generator(datagen,output_signature=(tf.TensorSpec(shape=(batch_size,self.d+1,self.N))))
+        # self.model.fit(dataset,epochs=1,steps_per_epoch=self.train_steps)
+        # self.model.fit(dataset,epochs=self.train_steps,steps_per_epoch=1,verbose=0, callbacks=[TqdmCallback(verbose=0)])
+        for _ in (pbar := tqdm(range(self.train_steps), desc='Train DeepOS')):
+            x=np.concatenate([X,np.expand_dims(V,axis=2)],axis=2).transpose((1,2,0))
+            out = self.model.train_step(x)
+            pbar.set_postfix(out)
+
+    def evaluate(self, batch_size:int, batches: int):
+        def datagen():
+            while True:
+                X,V,_,_ = self.gen(batch_size)
+                yield np.concatenate([X,np.expand_dims(V,axis=2)],axis=2).transpose((1,2,0))
+        dataset = tf.data.Dataset.from_generator(datagen,output_signature=(tf.TensorSpec(shape=(batch_size,self.d+1,self.N))))
+        stopped_index, stopped_payoffs = self.model.predict(dataset,steps=batches)
+        tau=self.t[stopped_index]
+        return tau, stopped_payoffs
 
 class LSMC(OptimalStopping):
     def __init__(self,
@@ -110,6 +265,10 @@ class LSMC(OptimalStopping):
 
 if __name__=="__main__":
     import time
+    import os
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+    os.environ["TF_ENABLE_ONEDNN_OPTS"]="1"
+    # tf.config.set_visible_devices([], 'GPU')
     T=3.0
     N=int(T*2*12)
     Nsim = 10
@@ -145,9 +304,12 @@ if __name__=="__main__":
     print(f'Feeding costs {feedingCosts} and Harvesting costs {harvestingCosts}')
     # soyParam[-1]=feedingCosts # to save the right dataset, since initial price is not relevant for soy model
 
-    rngSoy=np.random.default_rng(seed*100+1)
+    # rngSoy=np.random.default_rng(seed*100+1)
+    # rngSalmon=np.random.default_rng(seed*100+2)
+    rngSoy=tf.random.Generator.from_seed(seed*100+1)
+    rngSalmon=tf.random.Generator.from_seed(seed*100+2)
+
     soy=Schwartz2Factor(soyParam,t,dtype=dtype,rng=rngSoy)
-    rngSalmon=np.random.default_rng(seed*100+2)
     salmon=Schwartz2Factor(salmonParam,t,dtype=dtype,rng=rngSalmon)
 
 
@@ -168,8 +330,8 @@ if __name__=="__main__":
     from Feed import StochFeed,DetermFeed
     cr=1.1
     fc=feedingCosts
-    feed = StochFeed(fc,cr,r,t,soy)
-    # feed = DetermFeed(fc,cr,r,t,soy)
+    # feed = StochFeed(fc,cr,r,t,soy)
+    feed = DetermFeed(fc,cr,r,t,soy)
 
     from Mortality import ConstMortatlity
     n0=10000
@@ -178,20 +340,30 @@ if __name__=="__main__":
 
     from FishFarm import fishFarm
     farm = fishFarm(growth,feed,price,harvest,mort,stride=Nsim)
-    gen = farm.generateFishFarm
 
     deg=2
-    batch_size=100000
+    batch_size=2**12
     batches=1
     gen = farm.generateFishFarm
+    tic=time.time()
+    X,V,VH,ft = gen(batch_size)
+    ctime=time.time()-tic
+    print(f'Elapsed time for single generation {ctime}, for DeepOS {3000*ctime} s')
+    print(np.mean(X[0,:,:],axis=0))
+    print(np.mean(X[-1,:,:],axis=0))
 
-    basis = Polynomial(deg=deg,dtype=dtype)
+    # basis = Polynomial(deg=deg,dtype=dtype)
+    # opt=LSMC(r,farm.tCoarse,gen,basis)
 
-    opt=LSMC(r,farm.tCoarse,gen,basis)
-    # opt.train(batches)
+    opt=DeepOptS(r,farm.tCoarse,gen,d=2)
 
-    rngSoy=np.random.default_rng(seed*100+1)
-    rngSalmon=np.random.default_rng(seed*100+2)
+    opt.train(batch_size,batches)
+
+    # seed=2
+    # rngSoy=np.random.default_rng(seed*100+1)
+    # rngSalmon=np.random.default_rng(seed*100+2)
+    # rngSoy=tf.random.Generator.from_seed(seed*100+1)
+    # rngSalmon=tf.random.Generator.from_seed(seed*100+2)
     salmon.setgen(rngSalmon)
     soy.setgen(rngSoy)
     tau,Vtau=opt.evaluate(batch_size,batches)
