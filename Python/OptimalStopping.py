@@ -89,7 +89,7 @@ class DeepOS(Model):
             x=self.A[i-1](x)
         return x
 
-    @tf.function
+    # @tf.function
     # def train_step(self,data,opt):
     def train_step(self,data):
         # data shape = (Batch,Processes+Price,Time)
@@ -192,7 +192,7 @@ class DeepOptS(OptimalStopping):
         self.learning_rate_fn = tf.keras.optimizers.schedules.PiecewiseConstantDecay(self.lr_boundaries, self.lr_values)
         self.opt = Adam(self.learning_rate_fn,beta_1=0.9,beta_2=0.999,epsilon=1e-8)
         self.model = DeepOS(d=d,N=self.N,latent_dim=self.neurons)
-        self.model.compile(optimizer=self.opt, jit_compile=True, run_eagerly=False,steps_per_execution=1)
+        self.model.compile(optimizer=self.opt, jit_compile=False, run_eagerly=True,steps_per_execution=1)
     
     def train(self,batch_size:int,batches:int):
         def datagen():
@@ -201,7 +201,7 @@ class DeepOptS(OptimalStopping):
                 yield np.concatenate([X,np.expand_dims(V,axis=2)],axis=2).transpose((1,2,0))
         dataset = tf.data.Dataset.from_generator(datagen,output_signature=(tf.TensorSpec(shape=(batch_size,self.d+1,self.N))))
         # self.model.fit(dataset,epochs=1,steps_per_epoch=self.train_steps)
-        self.model.fit(dataset,epochs=self.train_steps,steps_per_epoch=1,verbose=0, callbacks=[TqdmCallback(verbose=0)])
+        self.model.fit(dataset,epochs=self.train_steps,steps_per_epoch=1,verbose=0, callbacks=[TqdmCallback(verbose=0)]) #check if opt updates correctly
         # for _ in (pbar := tqdm(range(self.train_steps), desc='Train DeepOS')): 
         #     X,V,_,_ = self.gen(batch_size)
         #     x=np.concatenate([X,np.expand_dims(V,axis=2)],axis=2).transpose((1,2,0))
