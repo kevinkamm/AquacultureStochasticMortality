@@ -68,7 +68,7 @@ class fishFarm():
         ht=self.harvest.totalCost(H,bt) # compute costs
 
         "sim points -> eval points"
-        X = np.concatenate([coarse(Y,self.stride) for Y in [W,N,F,P,H] if Y is not None] ,axis=2) #time x simulations x processes
+        X = np.concatenate([coarse(Y,self.stride) for Y in [W,N,P,F,H] if Y is not None] ,axis=2) #time x simulations x processes
         # t = coarse(self.feed.t,self.stride)
         tt = coarse(tt,self.stride)
         ft = coarse(ft,self.stride)

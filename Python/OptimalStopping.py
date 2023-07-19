@@ -77,23 +77,25 @@ class DeepOS(Model):
         self.Rafter.append(Reshape((self.N, self.outputDims), name=f'reshape{i + 1}2'))
         self.A.append(Activation('sigmoid'))
 
-    def call(self,inputs,training=True):
+    def call(self,inputs,training=False):
         x=self.Rbefore[0](inputs)
-        x=self.BN[0](x)
+        x=self.BN[0](x,training)
         x=self.Rafter[0](x)
         for i in range(1,len(self.BN)):
             x=self.D[i-1](x)
             x=self.Rbefore[i](x)
-            x=self.BN[i](x)
+            x=self.BN[i](x,training)
             x=self.Rafter[i](x)
             x=self.A[i-1](x)
         return x
 
+    @tf.function
+    # def train_step(self,data,opt):
     def train_step(self,data):
         # data shape = (Batch,Processes+Price,Time)
         p=data[:,-1,:]
         with tf.GradientTape() as tape:
-            nets = self(data[:,:,:-1],training=True)
+            nets = self(tf.transpose(data[:,:,:-1],(0,2,1)),training=True)
             nets = tf.transpose(nets,(0,2,1))
             u_list = [nets[:, :, 0]]
             u_sum = u_list[-1]
@@ -110,6 +112,7 @@ class DeepOS(Model):
         var_list = self.trainable_variables
         gradients = tape.gradient(loss,var_list)
         self.optimizer.apply_gradients(zip(gradients,var_list))
+        # opt.apply_gradients(zip(gradients,var_list))
 
         idx = tf.argmax(tf.cast(tf.cumsum(u_stack, axis=1) + u_stack >= 1,
                                 dtype=tf.uint8),
@@ -123,12 +126,12 @@ class DeepOS(Model):
     def predict_step(self,data):
         # data shape = (Batch,Processes+Price,Time), Price Last
         p=data[:,-1,:] # shape= (Batch,Time)
-        nets = self(data[:,:,:-1],training=False)
+        nets = self(tf.transpose(data[:,:,:-1],(0,2,1)),training=False)
         nets = tf.transpose(nets,(0,2,1))
         u_list = [nets[:, :, 0]]
         u_sum = u_list[-1]
         for k in range(1, self.N):
-            u_list.append(nets[:, :, k] * (1. - u_sum))
+            u_list.append(nets[:,:,  k] * (1. - u_sum))
             u_sum += u_list[-1]
 
         u_list.append(1. - u_sum)
@@ -189,7 +192,7 @@ class DeepOptS(OptimalStopping):
         self.learning_rate_fn = tf.keras.optimizers.schedules.PiecewiseConstantDecay(self.lr_boundaries, self.lr_values)
         self.opt = Adam(self.learning_rate_fn,beta_1=0.9,beta_2=0.999,epsilon=1e-8)
         self.model = DeepOS(d=d,N=self.N,latent_dim=self.neurons)
-        self.model.compile(optimizer=self.opt, jit_compile=True, run_eagerly=False)
+        self.model.compile(optimizer=self.opt, jit_compile=True, run_eagerly=False,steps_per_execution=1)
     
     def train(self,batch_size:int,batches:int):
         def datagen():
@@ -198,21 +201,33 @@ class DeepOptS(OptimalStopping):
                 yield np.concatenate([X,np.expand_dims(V,axis=2)],axis=2).transpose((1,2,0))
         dataset = tf.data.Dataset.from_generator(datagen,output_signature=(tf.TensorSpec(shape=(batch_size,self.d+1,self.N))))
         # self.model.fit(dataset,epochs=1,steps_per_epoch=self.train_steps)
-        # self.model.fit(dataset,epochs=self.train_steps,steps_per_epoch=1,verbose=0, callbacks=[TqdmCallback(verbose=0)])
-        for _ in (pbar := tqdm(range(self.train_steps), desc='Train DeepOS')):
-            x=np.concatenate([X,np.expand_dims(V,axis=2)],axis=2).transpose((1,2,0))
-            out = self.model.train_step(x)
-            pbar.set_postfix(out)
+        self.model.fit(dataset,epochs=self.train_steps,steps_per_epoch=1,verbose=0, callbacks=[TqdmCallback(verbose=0)])
+        # for _ in (pbar := tqdm(range(self.train_steps), desc='Train DeepOS')): 
+        #     X,V,_,_ = self.gen(batch_size)
+        #     x=np.concatenate([X,np.expand_dims(V,axis=2)],axis=2).transpose((1,2,0))
+        #     # out = self.model.train_step(x,self.opt)
+        #     out = self.model.train_step(x)
+        #     pbar.set_postfix(out)
 
     def evaluate(self, batch_size:int, batches: int):
-        def datagen():
+        def datagen(): # something is not right with this
             while True:
                 X,V,_,_ = self.gen(batch_size)
                 yield np.concatenate([X,np.expand_dims(V,axis=2)],axis=2).transpose((1,2,0))
         dataset = tf.data.Dataset.from_generator(datagen,output_signature=(tf.TensorSpec(shape=(batch_size,self.d+1,self.N))))
         stopped_index, stopped_payoffs = self.model.predict(dataset,steps=batches)
         tau=self.t[stopped_index]
-        return tau, stopped_payoffs
+        return tau,stopped_payoffs
+        # tau=[]
+        # stopped_payoffs=[]
+        # for _ in (pbar := tqdm(range(batches), desc='Train DeepOS')): # this version is much faster, when passing the optimizer to train step
+        #     X,V,_,_ = self.gen(batch_size)
+        #     x=np.concatenate([X,np.expand_dims(V,axis=2)],axis=2).transpose((1,2,0))
+        #     t,s = self.model.predict_step(x)
+        #     tau.append(t.numpy())
+        #     stopped_payoffs.append(s.numpy())
+
+        # return self.t[np.stack(tau,axis=0)], np.stack(stopped_payoffs,axis=0)
 
 class LSMC(OptimalStopping):
     def __init__(self,
@@ -330,8 +345,8 @@ if __name__=="__main__":
     from Feed import StochFeed,DetermFeed
     cr=1.1
     fc=feedingCosts
-    # feed = StochFeed(fc,cr,r,t,soy)
-    feed = DetermFeed(fc,cr,r,t,soy)
+    feed = StochFeed(fc,cr,r,t,soy)
+    # feed = DetermFeed(fc,cr,r,t,soy)
 
     from Mortality import ConstMortatlity
     n0=10000
@@ -355,15 +370,15 @@ if __name__=="__main__":
     # basis = Polynomial(deg=deg,dtype=dtype)
     # opt=LSMC(r,farm.tCoarse,gen,basis)
 
-    opt=DeepOptS(r,farm.tCoarse,gen,d=2)
+    opt=DeepOptS(r,farm.tCoarse,gen,d=4)
 
     opt.train(batch_size,batches)
 
-    # seed=2
+    seed=2
     # rngSoy=np.random.default_rng(seed*100+1)
     # rngSalmon=np.random.default_rng(seed*100+2)
-    # rngSoy=tf.random.Generator.from_seed(seed*100+1)
-    # rngSalmon=tf.random.Generator.from_seed(seed*100+2)
+    rngSoy=tf.random.Generator.from_seed(seed*100+1)
+    rngSalmon=tf.random.Generator.from_seed(seed*100+2)
     salmon.setgen(rngSalmon)
     soy.setgen(rngSoy)
     tau,Vtau=opt.evaluate(batch_size,batches)
