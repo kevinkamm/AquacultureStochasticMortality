@@ -155,34 +155,27 @@ class OptimalStopping:
     def __init__(self,
                  r:float,
                  t:np.ndarray,
-                 gen:Callable[[int], np.ndarray]) -> None:
+                 gen:Callable[[int], np.ndarray],
+                 batch_size:int=2**12) -> None:
         self.r=r
         self.t=t
         self.gen=gen
+        self.batch_size=batch_size
 
-    def train(self,batch_size:int,batches:int):
+    def train(self,batches:int):
         pass
 
-    def evaluate(self,batch_size:int,batches:int):
+    def evaluate(self,batches:int):
         pass
-
-    # def solve(self):
-    #     if self.batches >1:
-    #         out = Parallel(n_jobs=num_cores)(delayed(self.solveBatch)() for i in range(self.batches))
-    #     else:
-    #         out = self.solveBatch()
-    #     return out
-
-    # def solveBatch(self): 
-    #     pass
 
 class DeepOptS(OptimalStopping):
     def __init__(self, 
                  r: float, 
                  t: np.ndarray, 
                  gen: Callable[[int], np.ndarray],
-                 d:int ) -> None:
-        super().__init__(r, t, gen)
+                 d:int,
+                 batch_size:int=2**12) -> None:
+        super().__init__(r, t, gen,batch_size)
         self.N=t.shape[0]
         self.d=d
         self.lr_values = [0.05, 0.005, 0.0005]
@@ -193,7 +186,7 @@ class DeepOptS(OptimalStopping):
         self.opt = Adam(self.learning_rate_fn,beta_1=0.9,beta_2=0.999,epsilon=1e-8)
         self.model = DeepOS(d=d,N=self.N,latent_dim=self.neurons)
         self.model.compile(optimizer=self.opt, jit_compile=False, run_eagerly=True,steps_per_execution=1)
-        if type(t)==np.ndarray:
+        if type(self.t)==np.ndarray:
             def datagen():
                 while True:
                     X,V,_,_ = self.gen(batch_size)
@@ -208,12 +201,13 @@ class DeepOptS(OptimalStopping):
             self.t=t.numpy()
         
     
-    def train(self,batch_size:int,batches:int):
+    def train(self,batches:int):
+        # defining the dataset in init is faster for some reason
         self.model.fit(self.dataset,epochs=self.train_steps,steps_per_epoch=1,verbose=0, callbacks=[TqdmCallback(verbose=0)],
                        workers=1,
                        use_multiprocessing=False) #check if opt updates correctly
 
-    def evaluate(self, batch_size:int, batches: int):
+    def evaluate(self,batches: int):
         stopped_index, stopped_payoffs = self.model.predict(self.dataset,steps=batches)
         tau=self.t[stopped_index]
         return tau,stopped_payoffs
@@ -223,21 +217,22 @@ class LSMC(OptimalStopping):
                  r:float,
                  t:np.ndarray,
                  gen:Callable,
-                 b:Basis) -> None:
-        super().__init__(r,t,gen)
+                 b:Basis,
+                 batch_size:int=2**12) -> None:
+        super().__init__(r,t,gen,batch_size)
         self.b=b
 
         if type(t)==np.ndarray:
             self._gen=gen
         else:
             def newgen(x):
-                X,V,VH,ft = self.gen(batch_size)
+                X,V,VH,ft = self.gen(x)
                 return X.numpy(),V.numpy(),VH.numpy(),ft.numpy()
             self._gen=newgen
             self.t=self.t.numpy()
 
-    def evaluateBatch(self,batch_size:int):
-        X,V,VH,ft = self._gen(batch_size)
+    def evaluateBatch(self):
+        X,V,VH,ft = self._gen(self.batch_size)
         N=X.shape[0]
         M=X.shape[1]
 
@@ -271,13 +266,13 @@ class LSMC(OptimalStopping):
 
         return tau,Vtau
 
-    def evaluate(self, batch_size:int,batches: int):
-        # tau,Vtau = zip(*Parallel(n_jobs=num_cores)(delayed(self.evaluateBatch)(batch_size) for _ in range(0,batches) ) ) #generator not thread safe
+    def evaluate(self, batches: int):
+        # tau,Vtau = zip(*Parallel(n_jobs=num_cores)(delayed(self.evaluateBatch)() for _ in range(0,batches) ) ) #generator not thread safe
         # return tau,Vtau
         tau=[]
         Vtau=[]
         for _ in range(batches):
-            t,V = self.evaluateBatch(batch_size)
+            t,V = self.evaluateBatch()
             tau.append(t)
             Vtau.append(V)
         return np.concatenate(tau),np.concatenate(Vtau)
@@ -347,8 +342,8 @@ if __name__=="__main__":
     from Feed import StochFeed,DetermFeed
     cr=1.1
     fc=feedingCosts
-    # feed = StochFeed(fc,cr,r,t,soy)
-    feed = DetermFeed(fc,cr,r,t,soy)
+    feed = StochFeed(fc,cr,r,t,soy)
+    # feed = DetermFeed(fc,cr,r,t,soy)
 
     from Mortality import ConstMortatlity
     n0=10000
@@ -363,16 +358,16 @@ if __name__=="__main__":
     batches=20
     gen = farm.generateFishFarm
 
-    basis = Polynomial(deg=2,dtype=dtype)
-    opt=LSMC(r,farm.tCoarse,gen,basis)
+    # basis = Polynomial(deg=2,dtype=dtype)
+    # opt=LSMC(r,farm.tCoarse,gen,basis,batch_size=batch_size))
 
-    # opt=DeepOptS(r,farm.tCoarse,gen,d=farm.d)
+    opt=DeepOptS(r,farm.tCoarse,gen,d=farm.d,batch_size=batch_size)
 
-    opt.train(batch_size,batches)
+    opt.train(batches)
 
     farm.seed(seed+1)
     tic=time.time()
-    tau,Vtau=opt.evaluate(batch_size,batches)
+    tau,Vtau=opt.evaluate(batches)
     ctimeEval=time.time()-tic
 
     print(tau.shape)
