@@ -187,25 +187,30 @@ class HostParasite(Mortality):
     def sample(self,batch_size:int):
         N=self.t.shape[0]
         tic=time.time()
-        X=self.unifrnd((N,batch_size)).numpy() #avoids issues with rng generator in parallel
-        Y=self.betarnd((N,batch_size)).numpy()
+        X=self.unifrnd((N,batch_size))#avoids issues with rng generator in parallel
+        Y=self.betarnd((N,batch_size))
         ctime=time.time()-tic
-        print(f'Elapsed time {ctime} s')
+        print(f'Elapsed time {ctime} s {X[0,0]}')
         tic=time.time()
-        X=self.unifrnd((N,batch_size)).numpy() #avoids issues with rng generator in parallel
-        Y=self.betarnd((N,batch_size)).numpy()
+        X=self.unifrnd((N,batch_size))#avoids issues with rng generator in parallel
+        Y=self.betarnd((N,batch_size))
         ctime=time.time()-tic
-        print(f'Elapsed time {ctime} s')
-        tic=time.time()
-        X=self.unifrnd((N,batch_size)).numpy() #avoids issues with rng generator in parallel
-        Y=self.betarnd((N,batch_size)).numpy()
-        ctime=time.time()-tic
-        print(f'Elapsed time {ctime} s')
+        print(f'Elapsed time {ctime} s {X[0,0]}')
+        # tic=time.time()
+        # X=self.unifrnd((N,batch_size)).numpy() #avoids issues with rng generator in parallel
+        # Y=self.betarnd((N,batch_size)).numpy()
+        # ctime=time.time()-tic
+        # print(f'Elapsed time {ctime} s')
+        # tic=time.time()
+        # X=self.unifrnd((N,batch_size)).numpy() #avoids issues with rng generator in parallel
+        # Y=self.betarnd((N,batch_size)).numpy()
+        # ctime=time.time()-tic
+        # print(f'Elapsed time {ctime} s')
         # H,P,M = zip(*Parallel(n_jobs=4,backend='threading')(delayed(self.simHostParasite)(X[:,wi],Y[:,wi]) for wi in range(0,batch_size) ) ) 
-        # for wi in range(0,batch_size):
-            # H,P,M = self.simHostParasite(X[:,wi],Y[:,wi])
-        # H,P,M = self.simHostParasite(X[:,0],Y[:,0])
-        # return H,P,M
+        for wi in range(0,batch_size):
+            H,P,M = self.simHostParasite(X[:,wi],Y[:,wi])
+        H,P,M = self.simHostParasite(X[:,0],Y[:,0])
+        return H,P,M
 
 if __name__=="__main__":
     T=3.0
@@ -213,7 +218,7 @@ if __name__=="__main__":
     batch_size=100
     dtype=np.float32
     t=np.linspace(0,T,N,endpoint=True,dtype=dtype).reshape((-1,1))
-    t=tf.constant(t)
+    # t=tf.constant(t)
     params=[0.05,0.1,8.71,0.05]
     beta=[0.0835,0.0244]
     H0=10000.0

@@ -285,7 +285,7 @@ if __name__=="__main__":
     os.environ["TF_ENABLE_ONEDNN_OPTS"]="1"
     # tf.config.set_visible_devices([], 'GPU')
     T=3.0
-    N=int(T*2*12)
+    N=int(T*4*12+1)
     r=0.0303
     d=0
     Nsim = 10
