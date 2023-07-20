@@ -1,5 +1,6 @@
 import numpy as np
 import numexpr as ne
+import tensorflow as tf
 import time
 from pathlib import Path
 
@@ -10,25 +11,31 @@ from Harvest import Harvest
 from Mortality import Mortality
 from OptimalStopping import OptimalStopping
 
-from typing import List
+from typing import Optional
 
 "Auxiliary Functions"
-def coarse(X,stride):
-    if stride>1 and np.size(X)>1:
-        sz=X.shape
-        return np.concatenate([X[0].reshape((1,)+sz[1:]),X[stride-1::stride]],axis=0)
-    else:
-        return X
-
 
 class fishFarm():
+    def coarseNP(X,stride):
+        if stride>1 and np.size(X)>1:
+            sz=X.shape
+            return np.concatenate([X[0].reshape((1,)+sz[1:]),X[stride-1::stride]],axis=0)
+        else:
+            return X
+    def coarseTF(X,stride):
+        if stride>1 and tf.size(X)>1:
+            sz=X.shape
+            return tf.concat([tf.reshape(X[0],(1,)+sz[1:]),X[stride-1::stride]],axis=0)
+        else:
+            return X
     def __init__(self,
                  growth:Growth,
                  feed:Feed,
                  price:Price,
                  harvest:Harvest,
                  mort:Mortality,
-                 stride:int = 1):
+                 stride:int = 1,
+                 seed:Optional[int] = None):
         self.r=feed.r
         self.growth=growth
         self.feed=feed
@@ -36,7 +43,45 @@ class fishFarm():
         self.harvest=harvest
         self.mort=mort
         self.stride=stride
-        self.tCoarse=coarse(feed.t,stride)
+        if type(feed.t)==np.ndarray:
+            self._coarse=fishFarm.coarseNP
+            self.tCoarse=self._coarse(feed.t,self.stride)
+            self.discount=np.exp(-self.r*self.tCoarse) # discount factor
+        else:
+            self.stride=tf.constant(stride)
+            self._coarse=fishFarm.coarseTF
+            self.tCoarse=self._coarse(feed.t,self.stride)
+            self.discount=tf.math.exp(-self.r*self.tCoarse) # discount factor
+        d=0
+        d+=harvest.d
+        d+=growth.d
+        d+=price.d
+        d+=feed.d
+        d+=mort.d
+        self.d=d # number of stochastic processes
+        if seed is not None:
+            self.seed(seed)
+
+    def seed(self,seed:int):
+        seed=int(seed)
+        if type(self.feed.t)==np.ndarray:
+            rngGrowth=np.random.default_rng(seed*100+1)
+            rngFeed=np.random.default_rng(seed*100+2)
+            rngPrice=np.random.default_rng(seed*100+3)
+            rngHarvest=np.random.default_rng(seed*100+4)
+            rngMort=np.random.default_rng(seed*100+5)
+        else:
+            rngGrowth=tf.random.Generator.from_seed(seed*100+1)
+            rngFeed=tf.random.Generator.from_seed(seed*100+2)
+            rngPrice=tf.random.Generator.from_seed(seed*100+3)
+            rngHarvest=tf.random.Generator.from_seed(seed*100+4)
+            rngMort=tf.random.Generator.from_seed(seed*100+5)
+        self.growth.setgen(rngGrowth)
+        self.feed.setgen(rngFeed)
+        self.price.setgen(rngPrice)
+        self.harvest.setgen(rngHarvest)
+        self.mort.setgen(rngMort)
+
 
     def generateFishFarm(self,batch_size:int):
         # while True:
@@ -68,18 +113,20 @@ class fishFarm():
         ht=self.harvest.totalCost(H,bt) # compute costs
 
         "sim points -> eval points"
-        X = np.concatenate([coarse(Y,self.stride) for Y in [W,N,P,F,H] if Y is not None] ,axis=2) #time x simulations x processes
+        if type(self.feed.t)==np.ndarray:
+            X = np.concatenate([self._coarse(Y,self.stride) for Y in [W,N,P,F,H] if Y is not None] ,axis=2) #time x simulations x processes
+        else:
+            X = tf.concat([self._coarse(Y,self.stride) for Y in [W,N,P,F,H] if Y is not None] ,axis=2) #time x simulations x processes
         # t = coarse(self.feed.t,self.stride)
-        tt = coarse(tt,self.stride)
-        ft = coarse(ft,self.stride)
-        pt = coarse(pt,self.stride)
-        bt = coarse(bt,self.stride)
-        ht = coarse(ht,self.stride)
-        cumft = coarse(cumft,self.stride)
+        tt = self._coarse(tt,self.stride)
+        ft = self._coarse(ft,self.stride)
+        pt = self._coarse(pt,self.stride)
+        bt = self._coarse(bt,self.stride)
+        ht = self._coarse(ht,self.stride)
+        cumft = self._coarse(cumft,self.stride)
 
         VH=(1-tt)*(pt*bt-ht) # harvesting value
-        discount=np.exp(-self.r*self.tCoarse) # discount factor
-        V=discount*VH-cumft # total value of farm
+        V=self.discount*VH-cumft # total value of farm
 
         return X,V,VH,ft
             # yield X,V,VH,ft
