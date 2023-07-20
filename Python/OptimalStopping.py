@@ -125,6 +125,7 @@ class DeepOS(Model):
 
     def predict_step(self,data):
         # data shape = (Batch,Processes+Price,Time), Price Last
+        
         p=data[:,-1,:] # shape= (Batch,Time)
         nets = self(tf.transpose(data[:,:,:-1],(0,2,1)),training=False)
         nets = tf.transpose(nets,(0,2,1))
@@ -185,7 +186,7 @@ class DeepOptS(OptimalStopping):
         self.learning_rate_fn = tf.keras.optimizers.schedules.PiecewiseConstantDecay(self.lr_boundaries, self.lr_values)
         self.opt = Adam(self.learning_rate_fn,beta_1=0.9,beta_2=0.999,epsilon=1e-8)
         self.model = DeepOS(d=d,N=self.N,latent_dim=self.neurons)
-        self.model.compile(optimizer=self.opt, jit_compile=False, run_eagerly=True,steps_per_execution=1)
+        self.model.compile(optimizer=self.opt, jit_compile=True, run_eagerly=False,steps_per_execution=1)
         if type(self.t)==np.ndarray:
             def datagen():
                 while True:

@@ -352,7 +352,7 @@ class DeepOS:
 
 if __name__ == "__main__":
     # tf.config.set_visible_devices([], 'GPU') #GPU version much faster
-    import matplotlib.pyplot as plt
+    # import matplotlib.pyplot as plt
     import os
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
     os.environ["TF_ENABLE_ONEDNN_OPTS"]="1"

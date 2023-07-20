@@ -43,4 +43,3 @@ class Bertalanffy(Growth):
 
     def weight(self,G:Union[np.ndarray,tf.Tensor]):
         return self._weight(self.params,self.t)# Bertalanffy’s growth function
-    # return ne.evaluate("wInf*(a-b*exp(-c*t))**3 ",local_dict={'wInf':self.wInf,'a':self.a,'b':self.b,'c':self.c,'t':self.t})

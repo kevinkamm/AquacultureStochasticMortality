@@ -84,7 +84,6 @@ class fishFarm():
 
 
     def generateFishFarm(self,batch_size:int):
-        # while True:
         "Growth of Fish"
         W=self.growth.sample(batch_size) # sample processes
         wt=self.growth.weight(W) # compute weight
@@ -129,19 +128,23 @@ class fishFarm():
         V=self.discount*VH-cumft # total value of farm
 
         return X,V,VH,ft
-            # yield X,V,VH,ft
-
-
+    
 if __name__=="__main__":
     import time
+    import os
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+    os.environ["TF_ENABLE_ONEDNN_OPTS"]="1"
+    # tf.config.set_visible_devices([], 'GPU')
     T=3.0
     N=int(T*2*12)
+    r=0.0303
+    d=0
     Nsim = 10
     dtype=np.float32
     seed=1
 
     t=np.linspace(0,T,N*Nsim,endpoint=True,dtype=dtype).reshape((-1,1))
-    r=0.0303
+    t=tf.constant(t)
 
     from Commodities import Schwartz2Factor
     'Salmon'
@@ -169,10 +172,9 @@ if __name__=="__main__":
     print(f'Feeding costs {feedingCosts} and Harvesting costs {harvestingCosts}')
     # soyParam[-1]=feedingCosts # to save the right dataset, since initial price is not relevant for soy model
 
-    rngSoy=np.random.default_rng(seed*100+1)
-    soy=Schwartz2Factor(soyParam,t,dtype=dtype,rng=rngSoy)
-    rngSalmon=np.random.default_rng(seed*100+2)
-    salmon=Schwartz2Factor(salmonParam,t,dtype=dtype,rng=rngSalmon)
+
+    soy=Schwartz2Factor(soyParam,t,dtype=dtype)
+    salmon=Schwartz2Factor(salmonParam,t,dtype=dtype)
 
 
     from Harvest import Harvest
@@ -192,15 +194,35 @@ if __name__=="__main__":
     from Feed import StochFeed,DetermFeed
     cr=1.1
     fc=feedingCosts
-    feed = StochFeed(cr,fc,r,t,soy)
-    # feed = DetermFeed(cr,fc,r,t,soy)
+    feed = StochFeed(fc,cr,r,t,soy)
+    # feed = DetermFeed(fc,cr,r,t,soy)
 
     from Mortality import ConstMortatlity
     n0=10000
     m=0.1
     mort = ConstMortatlity(t,n0,m)
 
-    batch_size=8196
-    farm = fishFarm(growth,feed,price,harvest,mort,stride=Nsim)
-    X,V,VH,ft  = farm.generateFishFarm(batch_size)
-    print(V[-1,1])
+    from FishFarm import fishFarm
+    farm = fishFarm(growth,feed,price,harvest,mort,stride=Nsim,seed=seed)
+    farm.seed(seed)
+
+    batch_size=2**13
+    batches=20
+    gen = farm.generateFishFarm
+
+    tic=time.time()
+    X,V,VH,ft = gen(batch_size)
+    ctime=time.time() - tic
+    print(f'Elapsed time {ctime} s')
+    tic=time.time()
+    X,V,VH,ft = gen(batch_size)
+    ctime=time.time() - tic
+    print(f'Elapsed time {ctime} s')
+    tic=time.time()
+    X,V,VH,ft = gen(batch_size)
+    ctime=time.time() - tic
+    print(f'Elapsed time {ctime} s')
+    tic=time.time()
+    X,V,VH,ft = gen(batch_size)
+    ctime=time.time() - tic
+    print(f'Elapsed time {ctime} s')
