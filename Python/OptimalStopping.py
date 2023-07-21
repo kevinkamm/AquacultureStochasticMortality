@@ -47,6 +47,7 @@ class DeepOS(Model):
                 N:int = 2, # number of time steps
                 latent_dim: List[int]=[51], 
                 outputDims: int=1, 
+                batch_size:int =2**12,
                 name="deeposnet", 
                 **kwargs
                 ) \
@@ -54,6 +55,7 @@ class DeepOS(Model):
         super().__init__(name=name,**kwargs)
         self.latent_dim = latent_dim
         self.outputDims = outputDims
+        self.batch_size=batch_size
         self.d = d+1 # since price adds a dimension
         self.N = N-1 # stopping at t=N excluded
         self.D = []
@@ -143,7 +145,8 @@ class DeepOS(Model):
                                 dtype=tf.uint8),
                         axis=1,
                         output_type=tf.int32)
-        batch_size=data.shape[0]
+        # batch_size=data.shape[0]
+        batch_size=self.batch_size
         stopped_payoffs = tf.gather_nd(p, tf.stack([tf.range(0, batch_size, dtype=tf.int32), idx],
                                                                   axis=1))
 
@@ -185,21 +188,24 @@ class DeepOptS(OptimalStopping):
         self.lr_boundaries = [int(500 + d / 5), int(1500 + 3 * d / 5)]
         self.learning_rate_fn = tf.keras.optimizers.schedules.PiecewiseConstantDecay(self.lr_boundaries, self.lr_values)
         self.opt = Adam(self.learning_rate_fn,beta_1=0.9,beta_2=0.999,epsilon=1e-8)
-        self.model = DeepOS(d=d,N=self.N,latent_dim=self.neurons)
+        self.model = DeepOS(d=d,N=self.N,latent_dim=self.neurons,batch_size=batch_size)
         self.model.compile(optimizer=self.opt, jit_compile=True, run_eagerly=False,steps_per_execution=1)
+        self.dataset=self.datagenerator(batch_size)
+
+    def datagenerator(self,batch_size):
         if type(self.t)==np.ndarray:
             def datagen():
                 while True:
                     X,V,_,_ = self.gen(batch_size)
                     yield np.concatenate([X,np.expand_dims(V,axis=2)],axis=2).transpose((1,2,0))
-            self.dataset = tf.data.Dataset.from_generator(datagen,output_signature=(tf.TensorSpec(shape=(batch_size,self.d+1,self.N))))
+            dataset = tf.data.Dataset.from_generator(datagen,output_signature=(tf.TensorSpec(shape=(batch_size,self.d+1,self.N))))
         else:
             def datagen():
                 while True:
                     X,V,_,_ = self.gen(batch_size)
                     yield tf.transpose(tf.concat([X,tf.expand_dims(V,axis=2)],axis=2),(1,2,0))
-            self.dataset = tf.data.Dataset.from_generator(datagen,output_signature=(tf.TensorSpec(shape=(batch_size,self.d+1,self.N))))
-            self.t=t.numpy()
+            dataset = tf.data.Dataset.from_generator(datagen,output_signature=(tf.TensorSpec(shape=(batch_size,self.d+1,self.N))))
+        return dataset
         
     
     def train(self,batches:int):
@@ -208,9 +214,14 @@ class DeepOptS(OptimalStopping):
                        workers=1,
                        use_multiprocessing=False) #check if opt updates correctly
 
-    def evaluate(self,batches: int):
-        stopped_index, stopped_payoffs = self.model.predict(self.dataset,steps=batches)
-        tau=self.t[stopped_index]
+    def evaluate(self,X,V,Vh,ft):
+        if type(X)==np.ndarray:
+            dataset = tf.data.Dataset.from_tensor_slices(np.concatenate([X,np.expand_dims(V,axis=2)],axis=2).transpose((1,2,0))).batch(self.batch_size, drop_remainder=True)
+        else:
+            dataset = tf.data.Dataset.from_tensor_slices(tf.transpose(tf.concat([X,tf.expand_dims(V,axis=2)],axis=2),(1,2,0))).batch(self.batch_size, drop_remainder=True)
+        stopped_index, stopped_payoffs = self.model.predict(dataset)
+        t=np.array(self.t)
+        tau=t[stopped_index]
         return tau,stopped_payoffs
 
 class LSMC(OptimalStopping):
@@ -232,8 +243,8 @@ class LSMC(OptimalStopping):
             self._gen=newgen
             self.t=self.t.numpy()
 
-    def evaluateBatch(self):
-        X,V,VH,ft = self._gen(self.batch_size)
+    def evaluateBatch(self,X,V,VH,ft):
+        # X,V,VH,ft = self._gen(self.batch_size)
         N=X.shape[0]
         M=X.shape[1]
 
@@ -267,15 +278,29 @@ class LSMC(OptimalStopping):
 
         return tau,Vtau
 
-    def evaluate(self, batches: int):
-        # tau,Vtau = zip(*Parallel(n_jobs=num_cores)(delayed(self.evaluateBatch)() for _ in range(0,batches) ) ) #generator not thread safe
+    def evaluate(self,X,V,Vh,ft):
+        X=np.array(X)
+        V=np.array(V)
+        Vh=np.array(Vh)
+        ft=np.array(ft)
+
+        # tau,Vtau = zip(*Parallel(n_jobs=num_cores)(delayed(self.evaluateBatch)() for _ in range(0,batches) ) ) #generator maybe not thread safe
         # return tau,Vtau
+        batches=int(X.shape[1]/self.batch_size)
+        stride=self.batch_size
         tau=[]
         Vtau=[]
-        for _ in range(batches):
-            t,V = self.evaluateBatch()
-            tau.append(t)
-            Vtau.append(V)
+        for i in range(0,batches):
+            Xslice=X[:,i*stride:(i+1)*stride]
+            Vslice=V[:,i*stride:(i+1)*stride]
+            Vhslice=Vh[:,i*stride:(i+1)*stride]
+            if ft.shape[1]>1: #catch case of constant feeding costs
+                ftslice=ft[:,i*stride:(i+1)*stride]
+            else:
+                ftslice=ft
+            ttmp,Vtmp = self.evaluateBatch(Xslice,Vslice,Vhslice,ftslice)
+            tau.append(ttmp)
+            Vtau.append(Vtmp)
         return np.concatenate(tau),np.concatenate(Vtau)
 
 if __name__=="__main__":
@@ -284,13 +309,14 @@ if __name__=="__main__":
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
     os.environ["TF_ENABLE_ONEDNN_OPTS"]="1"
     # tf.config.set_visible_devices([], 'GPU')
+    tf.random.set_seed(1)
     T=3.0
     N=int(T*2*12)
     r=0.0303
     d=0
     Nsim = 10
     dtype=np.float32
-    seed=1
+    seed=0
 
     t=np.linspace(0,T,N*Nsim,endpoint=True,dtype=dtype).reshape((-1,1))
     t=tf.constant(t)
@@ -363,18 +389,33 @@ if __name__=="__main__":
 
     batch_size=2**12
     batches=20
+
+    X,V,Vh,ft = farm.generateFishFarm(batch_size*batches)
+    X=np.array(X)
+    V=np.array(V)
+    Vh=np.array(Vh)
+    ft=np.array(ft)
+    farm.seed(seed+1)
     gen = farm.generateFishFarm
 
-    # basis = Polynomial(deg=2,dtype=dtype)
-    # opt=LSMC(r,farm.tCoarse,gen,basis,batch_size=batch_size))
+    basis = Polynomial(deg=2,dtype=dtype)
+    optLSMC=LSMC(r,farm.tCoarse,gen,basis,batch_size=batch_size)
+
+    optLSMC.train(batches)
+
+    tic=time.time()
+    tau,Vtau=optLSMC.evaluate(X,V,Vh,ft)
+    ctimeEval=time.time()-tic
+
+    print(tau.shape)
+    print(f'LSMC Mean stopping time {np.mean(tau)} with mean value {np.mean(Vtau)} in {ctimeEval} s')
 
     opt=DeepOptS(r,farm.tCoarse,gen,d=farm.d,batch_size=batch_size)
 
     opt.train(batches)
 
-    farm.seed(seed+1)
     tic=time.time()
-    tau,Vtau=opt.evaluate(batches)
+    tau,Vtau=opt.evaluate(X,V,Vh,ft)
     ctimeEval=time.time()-tic
 
     print(tau.shape)
