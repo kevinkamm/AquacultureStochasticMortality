@@ -285,7 +285,7 @@ if __name__=="__main__":
     os.environ["TF_ENABLE_ONEDNN_OPTS"]="1"
     # tf.config.set_visible_devices([], 'GPU')
     T=3.0
-    N=int(T*4*12+1)
+    N=int(T*2*12)
     r=0.0303
     d=0
     Nsim = 10
@@ -346,10 +346,16 @@ if __name__=="__main__":
     feed = StochFeed(fc,cr,r,t,soy)
     # feed = DetermFeed(fc,cr,r,t,soy)
 
-    from Mortality import ConstMortatlity
-    n0=10000
-    m=0.1
-    mort = ConstMortatlity(t,n0,m)
+    from Mortality import ConstMortatlity,HostParasite
+    # n0=10000
+    # m=0.1
+    # mort = ConstMortatlity(t,n0,m)
+
+    params=[0.05,0.1,8.71,0.05]
+    beta=[0.0835,0.0244]
+    H0=10000.0
+    P0=1
+    mort = HostParasite(t,params,beta,H0,P0)
 
     from FishFarm import fishFarm
     farm = fishFarm(growth,feed,price,harvest,mort,stride=Nsim,seed=seed)

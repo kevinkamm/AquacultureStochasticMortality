@@ -92,6 +92,8 @@ class fishFarm():
         N = self.mort.sample(batch_size) # sample processes
         nt = self.mort.populationSize(N) # compute population size
         tt = self.mort.treatmentCost(N) # compute treatment cost
+        if self.mort.isStoch:
+            N=N[:,:,:-1]
 
         "Total Biomass"
         bt=wt*nt
