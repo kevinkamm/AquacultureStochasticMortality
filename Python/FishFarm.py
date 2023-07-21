@@ -94,6 +94,8 @@ class fishFarm():
         tt = self.mort.treatmentCost(N) # compute treatment cost
         if self.mort.isStoch:
             N=N[:,:,:-1]
+        else:
+            N=None
 
         "Total Biomass"
         bt=wt*nt

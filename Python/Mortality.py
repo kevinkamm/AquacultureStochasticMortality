@@ -1,8 +1,6 @@
 import numpy as np
 import tensorflow as tf
 from typing import Union, Optional
-from joblib import Parallel,delayed
-from psutil import cpu_count
 import tensorflow_probability as tfp
 import time
 tfd = tfp.distributions
@@ -168,6 +166,31 @@ class HostParasite(Mortality):
                        M:Union[np.ndarray,tf.Tensor] # host process
                        ):
         return 0.01*M[:,:,-1]
+    
+class DetermHostParasite(HostParasite):
+    def __init__(self,
+                 t:Union[np.ndarray,tf.Tensor],
+                 params:Union[np.ndarray,tf.Tensor],
+                 beta,
+                 H0:float,
+                 P0:float,
+                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
+        super().__init__(t,params,beta,H0,P0,rng)
+        self.isStoch=False
+        self.d=0
+
+    def populationSize(self, M):
+        if type(self.t)==np.ndarray:
+            return np.mean(super().populationSize(M),axis=1,keepdims=True)
+        else:
+            return tf.reduce_mean(super().populationSize(M),axis=1,keepdims=True)
+        
+    def treatmentCost(self, M):
+        if type(self.t)==np.ndarray:
+            return np.mean(super().treatmentCost(M),axis=1,keepdims=True)
+        else:
+            return tf.reduce_mean(super().treatmentCost(M),axis=1,keepdims=True)
+    
 
 if __name__=="__main__":
     # tf.config.set_visible_devices([], 'GPU')
@@ -182,7 +205,7 @@ if __name__=="__main__":
     H0=10000.0
     P0=1
 
-    mort = HostParasite(t,params,beta,H0,P0)
+    mort = DetermHostParasite(t,params,beta,H0,P0)
     tic=time.time()
     HPM=mort.sample(batch_size)
     ctime=time.time()-tic

@@ -372,7 +372,7 @@ if __name__=="__main__":
     feed = StochFeed(fc,cr,r,t,soy)
     # feed = DetermFeed(fc,cr,r,t,soy)
 
-    from Mortality import ConstMortatlity,HostParasite
+    from Mortality import ConstMortatlity,HostParasite,DetermHostParasite
     # n0=10000
     # m=0.1
     # mort = ConstMortatlity(t,n0,m)
@@ -381,7 +381,8 @@ if __name__=="__main__":
     beta=[0.0835,0.0244]
     H0=10000.0
     P0=1
-    mort = HostParasite(t,params,beta,H0,P0)
+    # mort = HostParasite(t,params,beta,H0,P0)
+    mort = DetermHostParasite(t,params,beta,H0,P0)
 
     from FishFarm import fishFarm
     farm = fishFarm(growth,feed,price,harvest,mort,stride=Nsim,seed=seed)
