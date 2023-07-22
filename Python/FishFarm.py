@@ -11,11 +11,26 @@ from Harvest import Harvest
 from Mortality import Mortality
 from OptimalStopping import OptimalStopping
 
-from typing import Optional
+from typing import Optional,List
 
 "Auxiliary Functions"
 
 class fishFarm():
+    def compareStoppingTimes(V:np.ndarray,taus:List[np.ndarray],t:np.ndarray):
+        M=V.shape[1]
+        Vout=[]
+        Tout=[]
+        for tau in taus:
+            Vtmp=0
+            Ttmp=0
+            for wi in range(0,M):
+                ti = np.where(t>=tau[wi])[0][0]
+                Vtmp += V[ti,wi]
+                Ttmp += tau[wi]
+            Vout.append(Vtmp/M)
+            Tout.append(Ttmp/M)
+        return Tout, Vout
+
     def coarseNP(X,stride):
         if stride>1 and np.size(X)>1:
             sz=X.shape

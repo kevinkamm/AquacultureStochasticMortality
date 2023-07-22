@@ -129,7 +129,7 @@ class DeepOS(Model):
         # data shape = (Batch,Processes+Price,Time), Price Last
         
         p=data[:,-1,:] # shape= (Batch,Time)
-        nets = self(tf.transpose(data[:,:,:-1],(0,2,1)),training=False)
+        nets = self(tf.transpose(data[:,:,:-1],(0,2,1)),training=True) # training=true crucial otherwise some strange things happen during prediction
         nets = tf.transpose(nets,(0,2,1))
         u_list = [nets[:, :, 0]]
         u_sum = u_list[-1]
@@ -184,8 +184,10 @@ class DeepOptS(OptimalStopping):
         self.d=d
         self.lr_values = [0.05, 0.005, 0.0005]
         self.neurons = [d + 50, d + 50]
-        self.train_steps = 3000 + d
-        self.lr_boundaries = [int(500 + d / 5), int(1500 + 3 * d / 5)]
+        # self.train_steps = 3000 + d
+        # self.lr_boundaries = [int(500 + d / 5), int(1500 + 3 * d / 5)]
+        self.train_steps = 1500 + d
+        self.lr_boundaries = [int(150 + d / 5), int(750 + 3 * d / 5)]
         self.learning_rate_fn = tf.keras.optimizers.schedules.PiecewiseConstantDecay(self.lr_boundaries, self.lr_values)
         self.opt = Adam(self.learning_rate_fn,beta_1=0.9,beta_2=0.999,epsilon=1e-8)
         self.model = DeepOS(d=d,N=self.N,latent_dim=self.neurons,batch_size=batch_size)
