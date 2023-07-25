@@ -8,11 +8,13 @@ tfd = tfp.distributions
 class Mortality():
     def __init__(self,
                  t:Union[np.ndarray,tf.Tensor],
+                 isStoch:bool,
+                 d:int,
                  rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
         self.t=t
         self.dtype=t.dtype
-        self.isStoch=False
-        self.d=0
+        self.isStoch=isStoch
+        self.d=d
         if rng is None:
             if type(t)==np.ndarray:
                 self.rng=np.random.default_rng()
@@ -47,7 +49,7 @@ class ConstMortatlity(Mortality):
                  n0:int,
                  m:float,
                  rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
-        super().__init__(t,rng)
+        super().__init__(t,False,0,rng)
         if type(t)==np.ndarray:
             self.m=m
             self.n0=n0
@@ -124,9 +126,7 @@ class HostParasite(Mortality):
                  P0:float,
                  rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
 
-        super().__init__(t,rng)
-        self.isStoch=True
-        self.d=2
+        super().__init__(t,True,2,rng)
         self.threshold=0.5
         if type(t)==np.ndarray:
             self.beta=beta
@@ -190,32 +190,203 @@ class DetermHostParasite(HostParasite):
             return np.mean(super().treatmentCost(M),axis=1,keepdims=True)
         else:
             return tf.reduce_mean(super().treatmentCost(M),axis=1,keepdims=True)
+        
+class Poisson(Mortality):
+    def thinningNP(lfunc,pwT,t,batch_size,rng):
+        T=t[-1]
+        pwT=pwT.reshape((-1,1))
+        t0=pwT[:-1]
+        t1=pwT[1:]
+        mesh=np.linspace(0,1,100,endpoint=True,dtype=t.dtype).reshape((1,-1))
+        tgrid=t0+(t1-t0)*mesh
+        sz=tgrid.shape
+        lambdaM=np.max(lfunc(tgrid.flatten()).reshape(sz),axis=1)
+
+        Nt=np.zeros((t.size,batch_size),dtype=t.dtype)
+        for wi in range(0,batch_size):
+            ti=0
+            J=0
+            s=[]
+            while ti<T:
+                X=-1/lambdaM[J]*np.log(rng.uniform(low=0.0,high=1.0,size=(1,1)).astype(t.dtype))
+                if ti+X>pwT[J+1]:
+                    if J>=pwT.size-2:
+                        break
+                    X=(X-pwT[J+1]+ti)*lambdaM[J]/lambdaM[J+1]
+                    ti=pwT[J+1]
+                    J=J+1
+                else:
+                    ti=ti+X
+                    U=rng.uniform(low=0.0,high=1.0,size=(1,1)).astype(t.dtype)
+                    if U <=lfunc(ti)/lambdaM[J]:
+                        s.append(ti)
+            for si in s:
+                currJ=np.where(t>=si)[0][0]
+                Nt[currJ,wi]=Nt[currJ,wi]+1
+        Nt=np.cumsum(Nt,axis=0)
+        return Nt
     
+    @tf.function
+    def thinningTF(lfunc,pwT,t,batch_size,rng):
+
+        T=t[-1]
+        pwT=tf.reshape(pwT,(-1,1))
+        t0=pwT[:-1]
+        t1=pwT[1:]
+        mesh=tf.reshape(tf.linspace(tf.constant(0,dtype=tf.float32),tf.constant(1,dtype=tf.float32),10),(1,-1)) 
+        tgrid=t0+(t1-t0)*mesh
+        sz=tgrid.shape
+        tgrid=tf.reshape(tgrid,(-1,1))
+        lambdaM=tf.reshape(tf.math.reduce_max(tf.reshape(lfunc(tgrid),sz),axis=1),(-1,1)) #this block takes 0.008 sec in Eager mode
+
+        Nt=tf.zeros((tf.size(t),batch_size),dtype=t.dtype)
+
+        # def cond(ti,T):
+        #     return tf.logical_and(tf.less(ti,T),)
+        # def body(ti,J,s):
+        #     X=-1/lambdaM[J]*tf.math.log(rng.uniform((1,1),0.0,1.0,dtype=t.dtype)) # 0.0009s
+        #     # print(f'Time {time.time()-tic}')
+        #     if ti+X>pwT[J+1]:
+        #         if J>=tf.size(pwT)-2:
+        #             ti=T+1
+        #             # break
+        #         # tic=time.time()
+        #         else:
+        #             X=(X-pwT[J+1]+ti)*lambdaM[J]/lambdaM[J+1]
+        #             ti=pwT[J+1]
+        #             J=J+1
+        #         # print(f'Time {time.time()-tic}') #0.0009s
+        #     else:
+        #         ti=ti+X
+        #         U=rng.uniform((1,1),0.0,1.0,dtype=t.dtype) # 0.0009s
+        #         if U <=lfunc(ti)/lambdaM[J]:
+        #             # s.append(ti)
+        #             s.append(tf.where(t>=ti)[0][0])
+
+
+        for wi in range(0,batch_size):
+            ti=tf.constant(0.0,dtype=t.dtype,shape=(1,1))
+            X=0
+            J=0
+            s=tf.reshape(tf.constant([0],dtype=tf.int64),(1,1))
+            while ti<T: #one iteration 0.005 sec in Eager mode
+                # tic=time.time()
+                X=-1/lambdaM[J]*tf.math.log(rng.uniform((1,1),0.0,1.0,dtype=t.dtype)) # 0.0009s
+                # print(f'Time {time.time()-tic}')
+                if ti+X>pwT[J+1]:
+                    if J>=tf.size(pwT)-2:
+                        ti=T+1.0
+                    # tic=time.time()
+                    else: 
+                        X=(X-pwT[J+1]+ti)*lambdaM[J]/lambdaM[J+1]
+                        ti=pwT[J+1]
+                        J=J+1
+                    # print(f'Time {time.time()-tic}') #0.0009s
+                else:
+                    ti=ti+X
+                    U=rng.uniform((1,1),0.0,1.0,dtype=t.dtype) # 0.0009s
+                    if U <=lfunc(ti)/lambdaM[J]:
+                        # s.append(ti)
+                        # s.append(tf.where(t>=ti)[0][0])
+                        tmp=tf.where(t>=ti)[0][0]
+                        s=tf.concat([s,tf.reshape(tmp,(1,1))],axis=0)
+                ti=tf.reshape(ti,(1,1))
+
+                
+                # print(f'Time {time.time()-tic}')
+            s2=s
+            # stf=tf.cast(tf.concat(s,axis=0),dtype=tf.int32)
+            # onesInt=tf.ones_like(s,dtype=tf.int32)
+            # onesFloat=tf.ones_like(s,dtype=tf.float32)
+            # Nt=tf.tensor_scatter_nd_update(Nt,tf.stack([stf,tf.cast(wi,tf.int32)*onesInt],axis=1),onesFloat) #not the bottleneck
+        Nt=tf.cumsum(Nt,axis=0)
+        return Nt
+
+    def __init__(self, 
+                 t:Union[np.ndarray,tf.Tensor],
+                 params:Union[np.ndarray,tf.Tensor],
+                 l:Union[np.ndarray,tf.Tensor],
+                 pwT:Union[np.ndarray,tf.Tensor],
+                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
+        super().__init__(t, rng,True,1)
+        if type(t)==np.ndarray:
+            self.params=params
+            self.l=l
+            self.pwT=pwT
+        else:
+            self.params=tf.constant(params)
+            self.l=tf.constant(l)
+            self.pwT=tf.constant(pwT)
+
 
 if __name__=="__main__":
     # tf.config.set_visible_devices([], 'GPU')
+
+    """Test Host Parasite
+    """
+
+    # T=3.0
+    # N=int(T*2*12)*10
+    # batch_size=2**12
+    # dtype=np.float32
+    # t=np.linspace(0,T,N,endpoint=True,dtype=dtype).reshape((-1,1))
+    # t=tf.constant(t)
+    # params=[0.05,0.1,8.71,0.05]
+    # beta=[0.0835,0.0244]
+    # H0=10000.0
+    # P0=1
+
+    # mort = DetermHostParasite(t,params,beta,H0,P0)
+    # tic=time.time()
+    # HPM=mort.sample(batch_size)
+    # ctime=time.time()-tic
+    # print(f'Elapsed time {ctime} s')
+    # tic=time.time()
+    # HPM=mort.sample(batch_size)
+    # ctime=time.time()-tic
+    # print(f'Elapsed time {ctime} s')
+    # tic=time.time()
+    # HPM=mort.sample(batch_size)
+    # ctime=time.time()-tic
+    # print(f'Elapsed time {ctime} s')
+
+    """Test Poisson
+    """
     T=3.0
     N=int(T*2*12)*10
-    batch_size=2**12
+    batch_size=10
     dtype=np.float32
     t=np.linspace(0,T,N,endpoint=True,dtype=dtype).reshape((-1,1))
-    t=tf.constant(t)
+    # t=tf.constant(t)
     params=[0.05,0.1,8.71,0.05]
     beta=[0.0835,0.0244]
     H0=10000.0
-    P0=1
-
-    mort = DetermHostParasite(t,params,beta,H0,P0)
-    tic=time.time()
-    HPM=mort.sample(batch_size)
-    ctime=time.time()-tic
-    print(f'Elapsed time {ctime} s')
-    tic=time.time()
-    HPM=mort.sample(batch_size)
-    ctime=time.time()-tic
-    print(f'Elapsed time {ctime} s')
-    tic=time.time()
-    HPM=mort.sample(batch_size)
-    ctime=time.time()-tic
-    print(f'Elapsed time {ctime} s')
     
+    tData=np.array([0.018868,0.037736,0.056604,0.075472,0.09434,0.11321,0.13208,0.15094,0.16981,0.18868,0.20755,0.22642,0.24528,0.26415,0.28302,0.30189,0.32075,0.33962,0.35849,0.37736,0.39623,0.41509,0.43396,0.45283,0.4717,0.49057,0.50943,0.5283,0.54717,0.56604,0.58491,0.60377,0.62264,0.64151,0.66038,0.67925,0.69811,0.71698,0.73585,0.75472,0.77358,0.79245,0.81132,0.83019,0.84906,0.86792,0.88679,0.90566,0.92453,0.9434,0.96226,0.98113,1,1.0189,1.0377,1.0755,1.0943,1.1132,1.1321,1.1509,1.1698,1.1887,1.2075,1.2264,1.2453,1.2642,1.283,1.3019,1.3208,1.3396,1.3585,1.3774,1.3962,1.4151,1.434,1.4528,1.4717,1.4906,1.5094,1.5283,1.5472,1.566,1.5849,1.6038
+],dtype=np.float32).reshape((-1,))
+    dm=np.array([0.45003,0,0.45003,0,0,0.90005,0,0,1.3501,0.90005,1.8001,1.3501,1.8001,2.2501,3.1502,1.8001,1.8001,2.7002,2.2501,2.2501,2.7002,1.8001,3.1502,3.1502,3.1502,5.8503,5.8503,6.7504,4.9503,6.3004,4.0502,7.2004,7.6504,8.5505,9.0005,9.9006,11.701,12.601,11.701,13.951,14.401,13.051,12.601,14.401,12.601,11.251,14.401,13.951,16.201,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501
+],dtype=np.float32).reshape((-1,))
+    lfunc= lambda x: np.interp(x,tData[1:],dm)
+    rng=np.random.default_rng(0)
+    pwT=np.array([0.020862,0.20862,0.49235,0.60501,0.70097,1.0014,1.0974,1.1892,1.2851,3],dtype=t.dtype) #slightly faster in np
+    # pwT=np.array([t[0],t[-1]],dtype=t.dtype)
+
+    tic=time.time()
+    Nt=Poisson.thinningNP(lfunc,pwT,t,batch_size,rng)
+    ctime=time.time()-tic
+    print(f'Elapsed time {ctime} s')
+    print(np.mean(Nt[-1,:]))
+
+    t=tf.constant(t)
+    tData=tf.constant(tData)
+    dm=tf.constant(dm)
+    lfunc= lambda x: tfp.math.interp_regular_1d_grid(x,tData[1],tData[-1],dm)
+    pwT=tf.constant(pwT)
+    rng=tf.random.Generator.from_seed(0)
+
+
+    tic=time.time()
+    Nt=Poisson.thinningTF(lfunc,pwT,t,batch_size,rng)
+    ctime=time.time()-tic
+    print(f'Elapsed time {ctime} s')
+    print(tf.reduce_mean(Nt[-1,:]))

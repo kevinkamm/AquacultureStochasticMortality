@@ -168,6 +168,7 @@ class Schwartz2Factor(Commodity):
 
         else:
             self.params=tf.constant(params,dtype=dtype)
+            # self.params=params
             self._d=tf.constant(2,dtype=tf.int32)
             self._brownianMotion=Schwartz2Factor.brownianMotionTF
             self._schwartz2Factor=Schwartz2Factor.schwartz2factorTF
