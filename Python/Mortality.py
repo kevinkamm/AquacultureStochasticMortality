@@ -1,4 +1,5 @@
 import numpy as np
+import numba as nb
 import tensorflow as tf
 from typing import Union, Optional
 import tensorflow_probability as tfp
@@ -192,115 +193,136 @@ class DetermHostParasite(HostParasite):
             return tf.reduce_mean(super().treatmentCost(M),axis=1,keepdims=True)
         
 class Poisson(Mortality):
-    def thinningNP(lfunc,pwT,t,batch_size,rng):
-        T=t[-1]
-        pwT=pwT.reshape((-1,1))
-        t0=pwT[:-1]
-        t1=pwT[1:]
-        mesh=np.linspace(0,1,100,endpoint=True,dtype=t.dtype).reshape((1,-1))
-        tgrid=t0+(t1-t0)*mesh
-        sz=tgrid.shape
-        lambdaM=np.max(lfunc(tgrid.flatten()).reshape(sz),axis=1)
 
-        Nt=np.zeros((t.size,batch_size),dtype=t.dtype)
-        for wi in range(0,batch_size):
-            ti=0
-            J=0
-            s=[]
-            while ti<T:
-                X=-1/lambdaM[J]*np.log(rng.uniform(low=0.0,high=1.0,size=(1,1)).astype(t.dtype))
-                if ti+X>pwT[J+1]:
-                    if J>=pwT.size-2:
-                        break
-                    X=(X-pwT[J+1]+ti)*lambdaM[J]/lambdaM[J+1]
-                    ti=pwT[J+1]
-                    J=J+1
-                else:
-                    ti=ti+X
-                    U=rng.uniform(low=0.0,high=1.0,size=(1,1)).astype(t.dtype)
-                    if U <=lfunc(ti)/lambdaM[J]:
-                        s.append(ti)
-            for si in s:
-                currJ=np.where(t>=si)[0][0]
-                Nt[currJ,wi]=Nt[currJ,wi]+1
-        Nt=np.cumsum(Nt,axis=0)
+    @tf.function
+    def transformTFRagged(t,l,batch_size):
+
+        Nt=tf.zeros((tf.size(t)*batch_size,),dtype=t.dtype)
+        LT=l[-1]
+        r=tf.random.poisson((batch_size,),LT,dtype=tf.int32)
+        njumps=tf.cast(tf.reduce_sum(r),dtype=tf.int32)
+        u=tf.random.uniform((njumps,),0,1,dtype=t.dtype)
+        a=tf.zeros_like(u,dtype=t.dtype)
+        b=t[-1]*tf.ones_like(u,dtype=t.dtype)
+        for _ in range(0,10):
+            tmp=tfp.math.interp_regular_1d_grid((a+b)/2,t[0,0],t[-1,0],l)/LT
+            less=tf.cast(tmp<=u,t.dtype)
+            greater=1-less
+            a=(a+b)/2 *less + a * (1-less)
+            b=(a+b)/2 *greater + b * (1-greater)
+        Ftinv=tf.reshape((a+b)/2,(-1,1))
+        tI=tf.cast(tf.argmax(Ftinv<tf.transpose(t),axis=1),dtype=tf.int32)
+        ind=(tf.size(t)*tf.reshape(tf.range(0,batch_size,dtype=tf.int32),(-1,1)))+tf.RaggedTensor.from_row_lengths(tI,r)
+        
+        ind=tf.reshape(tf.concat(ind.to_tensor(),0),(-1,1))
+        Nt=tf.tensor_scatter_nd_add(Nt,ind,tf.ones(shape=(tf.size(ind)),dtype=t.dtype))
+        Nt=tf.transpose(tf.reshape(Nt,(batch_size,tf.size(t))))
+        return tf.concat([tf.zeros((1,batch_size),dtype=t.dtype),tf.cumsum(Nt[1:,:],0)],axis=0)
+
+
+        # ind=tf.reshape(tf.concat(ind.to_list(),0),(-1,1))
+        # Nt=tf.tensor_scatter_nd_add(Nt,ind,tf.ones(shape=(njumps),dtype=t.dtype))
+        # Nt=tf.transpose(tf.reshape(Nt,(batch_size,tf.size(t))))
+        # return tf.cumsum(Nt,0)
+    
+    @tf.function
+    def transformTFSingle(x):
+        t=x[:,0]
+        l=x[:,1]
+        N=t.shape[0]
+        Nt=tf.zeros((N,),dtype=t.dtype)
+        LT=l[-1]
+        r=tf.random.poisson((1,),LT,dtype=tf.int64)
+        # njumps=tf.cast(tf.reduce_sum(r),tf.int64)
+        u=tf.random.uniform((r[0],),0,1,t.dtype)
+        a=tf.zeros_like(u,dtype=t.dtype)
+        b=t[-1]*tf.ones_like(u,dtype=t.dtype)
+        for _ in range(0,10):
+            # tmp=Lfunc((a+b)/2)/LT
+            tmp=tfp.math.interp_regular_1d_grid((a+b)/2,t[0],t[-1],l)/LT
+            less=tf.cast(tmp<=u,tf.float32)
+            greater=1-less
+            a=(a+b)/2 *less + a * (1-less)
+            b=(a+b)/2 *greater + b * (1-greater)
+        Ftinv=tf.reshape((a+b)/2,(-1,1))
+
+        tI=tf.reshape(tf.cast(tf.argmax(Ftinv<tf.transpose(t),axis=1),dtype=tf.int64),(-1,1))
+        Nt=tf.tensor_scatter_nd_add(Nt,tI,tf.ones(shape=(r),dtype=t.dtype))
+
         return Nt
     
     @tf.function
-    def thinningTF(lfunc,pwT,t,batch_size,rng):
+    def transformTF(t,l,batch_size):
+        
+        x=tf.reshape(tf.concat([t,tf.reshape(l,(-1,1))],axis=1),(t.shape[0],2))
+        def transformTFSingle2(i):
+            return Poisson.transformTFSingle(x)
 
-        T=t[-1]
-        pwT=tf.reshape(pwT,(-1,1))
-        t0=pwT[:-1]
-        t1=pwT[1:]
-        mesh=tf.reshape(tf.linspace(tf.constant(0,dtype=tf.float32),tf.constant(1,dtype=tf.float32),10),(1,-1)) 
-        tgrid=t0+(t1-t0)*mesh
-        sz=tgrid.shape
-        tgrid=tf.reshape(tgrid,(-1,1))
-        lambdaM=tf.reshape(tf.math.reduce_max(tf.reshape(lfunc(tgrid),sz),axis=1),(-1,1)) #this block takes 0.008 sec in Eager mode
+        nt=tf.map_fn(transformTFSingle2,tf.range(0,batch_size,dtype=t.dtype),parallel_iterations=4)
+        # nt=tf.vectorized_map(transformTFSingle2,tf.ones((batch_size,),dtype=t.dtype))
 
-        Nt=tf.zeros((tf.size(t),batch_size),dtype=t.dtype)
+        return tf.cumsum(tf.transpose(nt),axis=0)
+    
+    def transformNP(t,Lfunc,batch_size,rng):
+        t=t.reshape((-1,1))
+        Nt=np.zeros((t.size,batch_size),dtype=t.dtype)
+        LT=Lfunc(t[-1])
+        r=rng.poisson(LT,(batch_size,)).astype(np.int32)
+        njumps=int(np.sum(r))
+        u=rng.uniform(0,1,(njumps,1)).astype(t.dtype)
+        a=np.zeros_like(u,dtype=t.dtype)
+        b=t[-1]*np.ones_like(u,dtype=t.dtype)
+        for _ in range(0,10):
+            tmp=Lfunc((a+b)/2)/LT
+            less=tmp<=u
+            greater=np.logical_not(less)
+            a[less]=(a[less]+b[less])/2
+            b[greater]=(a[greater]+b[greater])/2
+        Ftinv=(a+b)/2
 
-        # def cond(ti,T):
-        #     return tf.logical_and(tf.less(ti,T),)
-        # def body(ti,J,s):
-        #     X=-1/lambdaM[J]*tf.math.log(rng.uniform((1,1),0.0,1.0,dtype=t.dtype)) # 0.0009s
-        #     # print(f'Time {time.time()-tic}')
-        #     if ti+X>pwT[J+1]:
-        #         if J>=tf.size(pwT)-2:
-        #             ti=T+1
-        #             # break
-        #         # tic=time.time()
-        #         else:
-        #             X=(X-pwT[J+1]+ti)*lambdaM[J]/lambdaM[J+1]
-        #             ti=pwT[J+1]
-        #             J=J+1
-        #         # print(f'Time {time.time()-tic}') #0.0009s
-        #     else:
-        #         ti=ti+X
-        #         U=rng.uniform((1,1),0.0,1.0,dtype=t.dtype) # 0.0009s
-        #         if U <=lfunc(ti)/lambdaM[J]:
-        #             # s.append(ti)
-        #             s.append(tf.where(t>=ti)[0][0])
-
-
+        lastJumps=0
+        tI=np.argmax(Ftinv<t.T,axis=1)
         for wi in range(0,batch_size):
-            ti=tf.constant(0.0,dtype=t.dtype,shape=(1,1))
-            X=0
-            J=0
-            s=tf.reshape(tf.constant([0],dtype=tf.int64),(1,1))
-            while ti<T: #one iteration 0.005 sec in Eager mode
-                # tic=time.time()
-                X=-1/lambdaM[J]*tf.math.log(rng.uniform((1,1),0.0,1.0,dtype=t.dtype)) # 0.0009s
-                # print(f'Time {time.time()-tic}')
-                if ti+X>pwT[J+1]:
-                    if J>=tf.size(pwT)-2:
-                        ti=T+1.0
-                    # tic=time.time()
-                    else: 
-                        X=(X-pwT[J+1]+ti)*lambdaM[J]/lambdaM[J+1]
-                        ti=pwT[J+1]
-                        J=J+1
-                    # print(f'Time {time.time()-tic}') #0.0009s
-                else:
-                    ti=ti+X
-                    U=rng.uniform((1,1),0.0,1.0,dtype=t.dtype) # 0.0009s
-                    if U <=lfunc(ti)/lambdaM[J]:
-                        # s.append(ti)
-                        # s.append(tf.where(t>=ti)[0][0])
-                        tmp=tf.where(t>=ti)[0][0]
-                        s=tf.concat([s,tf.reshape(tmp,(1,1))],axis=0)
-                ti=tf.reshape(ti,(1,1))
+            currJumps=tI[lastJumps:lastJumps+r[wi]]
+            lastJumps=lastJumps+r[wi]
+            for ji in range(0,currJumps.size):
+                ti=currJumps[ji]
+                Nt[ti,wi]+=1
+        return np.cumsum(Nt,0)
+    
+    @nb.jit()
+    def transformNb(t,Lfunc,batch_size,Nt):
 
-                
-                # print(f'Time {time.time()-tic}')
-            s2=s
-            # stf=tf.cast(tf.concat(s,axis=0),dtype=tf.int32)
-            # onesInt=tf.ones_like(s,dtype=tf.int32)
-            # onesFloat=tf.ones_like(s,dtype=tf.float32)
-            # Nt=tf.tensor_scatter_nd_update(Nt,tf.stack([stf,tf.cast(wi,tf.int32)*onesInt],axis=1),onesFloat) #not the bottleneck
-        Nt=tf.cumsum(Nt,axis=0)
+        LT=Lfunc(t[-1])
+        r=np.random.poisson(LT[0],(batch_size,)).astype(np.int32)
+        njumps=int(np.sum(r))
+        u=np.random.uniform(0,1,(njumps,1)).astype(t.dtype)
+        a=np.zeros_like(u).astype(t.dtype)
+        b=t[-1]*np.ones_like(u).astype(t.dtype)
+        for _ in range(0,10):
+            tmp=Lfunc((a+b)/2)/LT
+            for j in range(0,njumps):
+                if tmp[j]<=u[j]:
+                    a[j]=(a[j]+b[j])/2
+                else:
+                    b[j]=(a[j]+b[j])/2
+        Ftinv=(a+b)/2
+
+        lastJumps=0
+        tI=np.zeros_like(Ftinv).astype(np.int32)
+        for i in range(0,njumps):
+            tI[i]=np.argmax(Ftinv[i]<t)
+ 
+        for wi in nb.prange(0,batch_size):
+            currJumps=tI[lastJumps:lastJumps+r[wi]]
+            lastJumps=lastJumps+r[wi]
+            for ji in range(0,currJumps.size):
+                ti=currJumps[ji]
+                Nt[ti,wi]+=1
         return Nt
+    
+
+        
 
     def __init__(self, 
                  t:Union[np.ndarray,tf.Tensor],
@@ -354,7 +376,7 @@ if __name__=="__main__":
     """
     T=3.0
     N=int(T*2*12)*10
-    batch_size=10
+    batch_size=2**12
     dtype=np.float32
     t=np.linspace(0,T,N,endpoint=True,dtype=dtype).reshape((-1,1))
     # t=tf.constant(t)
@@ -366,27 +388,223 @@ if __name__=="__main__":
 ],dtype=np.float32).reshape((-1,))
     dm=np.array([0.45003,0,0.45003,0,0,0.90005,0,0,1.3501,0.90005,1.8001,1.3501,1.8001,2.2501,3.1502,1.8001,1.8001,2.7002,2.2501,2.2501,2.7002,1.8001,3.1502,3.1502,3.1502,5.8503,5.8503,6.7504,4.9503,6.3004,4.0502,7.2004,7.6504,8.5505,9.0005,9.9006,11.701,12.601,11.701,13.951,14.401,13.051,12.601,14.401,12.601,11.251,14.401,13.951,16.201,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501,13.501
 ],dtype=np.float32).reshape((-1,))
-    lfunc= lambda x: np.interp(x,tData[1:],dm)
-    rng=np.random.default_rng(0)
-    pwT=np.array([0.020862,0.20862,0.49235,0.60501,0.70097,1.0014,1.0974,1.1892,1.2851,3],dtype=t.dtype) #slightly faster in np
-    # pwT=np.array([t[0],t[-1]],dtype=t.dtype)
+    
+    
+    dt=T/(N-1)
+    lfunc= (np.cumsum(np.interp(t,tData[1:],dm),axis=0)*dt).flatten()
+
+    Lfunc= lambda x: np.interp(x,t.flatten(),lfunc)
+
+    rngNP=np.random.default_rng(0)
+    rngTF=tf.random.Generator.from_seed(0)
 
     tic=time.time()
-    Nt=Poisson.thinningNP(lfunc,pwT,t,batch_size,rng)
+    Nt=Poisson.transformNP(t,Lfunc,batch_size,rngNP)
     ctime=time.time()-tic
     print(f'Elapsed time {ctime} s')
     print(np.mean(Nt[-1,:]))
 
-    t=tf.constant(t)
-    tData=tf.constant(tData)
-    dm=tf.constant(dm)
-    lfunc= lambda x: tfp.math.interp_regular_1d_grid(x,tData[1],tData[-1],dm)
-    pwT=tf.constant(pwT)
-    rng=tf.random.Generator.from_seed(0)
-
-
     tic=time.time()
-    Nt=Poisson.thinningTF(lfunc,pwT,t,batch_size,rng)
+    Nt=Poisson.transformTFRagged(tf.constant(t),tf.constant(lfunc,dtype=t.dtype),batch_size)
     ctime=time.time()-tic
     print(f'Elapsed time {ctime} s')
-    print(tf.reduce_mean(Nt[-1,:]))
+    print(np.mean(Nt[-1,:]))
+
+    tic=time.time()
+    Nt=Poisson.transformTFRagged(tf.constant(t),tf.constant(lfunc,dtype=t.dtype),batch_size)
+    ctime=time.time()-tic
+    print(f'Elapsed time {ctime} s')
+    print(np.mean(Nt[-1,:]))
+    
+    with tf.device('cpu:0'):
+        tic=time.time()
+        Nt=Poisson.transformTF(tf.constant(t),tf.constant(lfunc,dtype=t.dtype),batch_size)
+        ctime=time.time()-tic
+        print(f'Elapsed time {ctime} s')
+        print(np.mean(Nt[-1,:]))
+        tic=time.time()
+        Nt=Poisson.transformTF(tf.constant(t),tf.constant(lfunc,dtype=t.dtype),batch_size)
+        ctime=time.time()-tic
+        print(f'Elapsed time {ctime} s')
+        print(np.mean(Nt[-1,:]))
+        tic=time.time()
+        Nt=Poisson.transformTF(tf.constant(t),tf.constant(lfunc,dtype=t.dtype),batch_size)
+        ctime=time.time()-tic
+        print(f'Elapsed time {ctime} s')
+        print(np.mean(Nt[-1,:]))
+        print(Nt[-1,0:5])
+
+
+
+# """ Old Code: Thinning method too slow """
+# class Poisson(Mortality):
+
+#     @nb.njit() #slight improvement
+#     def _thinningNbSingle(t,lfunc,lambdaM,Nt):
+#         T=t[-1]
+#         X=0.0
+#         ti=0.0
+#         J=0
+#         # s=[]
+#         # Nt=np.zeros((t.size,1))
+#         while ti<T:
+#             # u=np.random.rand(1)[0]#not bottleneck
+#             X=-1/lambdaM[J]*np.log(np.random.rand(1))[0]
+#             if ti+X>pwT[J+1]:
+#                 if J>=pwT.size-2:
+#                     break
+#                 else:
+#                     X=(X-pwT[J+1]+ti)*lambdaM[J]/lambdaM[J+1]
+#                     ti=pwT[J+1]
+#                     J=J+1
+#             else:
+#                 ti=ti+X
+#                 U=np.random.rand(1)[0]
+#                 if U <=lfunc(np.array(ti))/lambdaM[J]:
+#                     currJ=np.where(t>=ti)[0][0]
+#                     Nt[currJ]=Nt[currJ]+1
+    
+#     # @nb.njit() #makes it actually slower
+#     def _thinningBatch(inner,t,lfunc,lambdaM,batch_size,Nt):
+#         for wi in range(0,batch_size):
+#             inner(t,lfunc,lambdaM,Nt[:,wi]) #inplace Nt[:,wi]
+
+#     def thinningNb(tData,dm,pwT,t,batch_size,rng):
+#         tData=tData.astype(np.float64)
+#         dm=dm.astype(np.float64)
+#         t=t.astype(np.float64)
+
+#         @nb.njit()
+#         def lfunc(x): #not the bottleneck
+#             # sz=x.shape
+#             # t=tData[1:]
+#             # y=dm
+#             # vec=x.flatten()
+#             # for i in range(0,vec.size):
+#             #     x=vec[i]
+#             #     if x<=t[0]:
+#             #         vec[i]=y[0]
+#             #     elif x>=t[-1]:
+#             #         vec[i]=y[-1]  
+#             #     else:
+#             #         j=np.where(x>=t)[0][0]
+#             #         vec[i]=y[j-1]+(y[j]-y[j-1])/(t[j]-t[j-1])*(vec[i]-t[j-1])
+#             # return vec.reshape(sz)
+#             return np.interp(x,tData[1:],dm)
+        
+#         T=t[-1]
+#         pwT=pwT.reshape((-1,1))
+#         t0=pwT[:-1]
+#         t1=pwT[1:]
+#         mesh=np.linspace(0,1,100,endpoint=True,dtype=np.float64).reshape((1,-1))
+#         tgrid=t0+(t1-t0)*mesh
+#         sz=tgrid.shape
+#         lambdaM=np.max(lfunc(tgrid.flatten()).reshape(sz),axis=1).astype(np.float64)
+#         Nt=np.zeros((t.size,batch_size))
+#         Poisson._thinningBatch(Poisson._thinningNbSingle,t,lfunc,lambdaM,batch_size,Nt)#manipulates Nt inplace
+#         Nt=np.cumsum(Nt,axis=0)
+#         return Nt
+    
+#     def thinningNP(lfunc,pwT,t,batch_size,rng):
+#         T=t[-1]
+#         pwT=pwT.reshape((-1,1))
+#         t0=pwT[:-1]
+#         t1=pwT[1:]
+#         mesh=np.linspace(0,1,100,endpoint=True,dtype=t.dtype).reshape((1,-1))
+#         tgrid=t0+(t1-t0)*mesh
+#         sz=tgrid.shape
+#         lambdaM=np.max(lfunc(tgrid.flatten()).reshape(sz),axis=1)
+
+#         Nt=np.zeros((t.size,batch_size),dtype=t.dtype)
+#         for wi in range(0,batch_size):
+#             ti=0
+#             J=0
+
+#             while ti<T:
+#                 X=-1/lambdaM[J]*np.log(rng.uniform(low=0.0,high=1.0,size=(1,1)).astype(t.dtype))
+#                 if ti+X>pwT[J+1]:
+#                     if J>=pwT.size-2:
+#                         break
+#                     X=(X-pwT[J+1]+ti)*lambdaM[J]/lambdaM[J+1]
+#                     ti=pwT[J+1]
+#                     J=J+1
+#                 else:
+#                     ti=ti+X
+#                     U=rng.uniform(low=0.0,high=1.0,size=(1,1)).astype(t.dtype)
+#                     if U <=lfunc(ti)/lambdaM[J]:
+#                         currJ=np.where(t>=ti)[0][0]
+#                         Nt[currJ,wi]=Nt[currJ,wi]+1
+
+#         Nt=np.cumsum(Nt,axis=0)
+#         return Nt
+    
+#     # @tf.function
+#     def thinningTF(lfunc,pwT,t,batch_size,rng):
+
+#         T=t[-1]
+#         pwT=tf.reshape(pwT,(-1,1))
+#         t0=pwT[:-1]
+#         t1=pwT[1:]
+#         mesh=tf.reshape(tf.linspace(tf.constant(0,dtype=tf.float32),tf.constant(1,dtype=tf.float32),100),(1,-1)) 
+#         tgrid=t0+(t1-t0)*mesh
+#         sz=tgrid.shape
+#         tgrid=tf.reshape(tgrid,(-1,1))
+#         lambdaM=tf.reshape(tf.math.reduce_max(tf.reshape(lfunc(tgrid),sz),axis=1),(-1,1)) #this block takes 0.008 sec in Eager mode
+
+#         # Nt=tf.zeros((tf.size(t),batch_size),dtype=t.dtype)
+
+#         @tf.function
+#         def body(ti,J,X,s):
+#             X=-1/lambdaM[J[0]]*tf.math.log(rng.uniform((1,),0.0,1.0,dtype=t.dtype))
+#             if ti+X>pwT[J[0]+1]:
+#                 if J[0]>=tf.size(pwT)-2:
+#                     ti=T+1
+#                 else:
+#                     X=(X-pwT[J[0]+1]+ti)*lambdaM[J[0]]/lambdaM[J[0]+1]
+#                     ti=pwT[J[0]+1]
+#                     J=J+1
+#             else:
+#                 ti=ti+X
+#                 U=tf.math.log(rng.uniform((1,),0.0,1.0,dtype=t.dtype))
+#                 if U <=lfunc(ti)/lambdaM[J[0]]:
+#                     tmp=tf.cast(tf.where(t>=ti)[0][0],tf.int32)
+#                     s=tf.concat([s,tf.reshape(tmp,(1,1))],axis=0)
+
+#             return ti,J,X,s
+
+#         @tf.function
+#         def condition(ti,J,X,s):
+#             return tf.less(ti,T)
+        
+#         @tf.function
+#         def sample(i):
+#             ti=tf.constant([0.0],dtype=t.dtype)
+#             X=tf.constant([0.0],dtype=t.dtype)
+#             J=tf.constant([0],dtype=tf.int32)
+#             s=tf.constant([0],shape=(1,1),dtype=tf.int32)
+#             out = tf.while_loop(condition, body, [ti,J,X,s],shape_invariants=[ti.get_shape(),J.get_shape(),X.get_shape(),tf.TensorShape([None,1])])
+#             stf=tf.reshape(out[3][1:],(-1,))
+#             Nti=tf.zeros((tf.size(t),1),dtype=t.dtype)
+#             onesInt=tf.zeros_like(stf,dtype=tf.int32)
+#             onesFloat=tf.ones_like(stf,dtype=tf.float32)
+#             return tf.tensor_scatter_nd_add(Nti,tf.stack([stf,onesInt],axis=1),onesFloat)
+        
+#         # return tf.map_fn(sample,tf.range(0,batch_size),parallel_iterations=10) # does not work for some reason
+#         nt=[]
+#         for wi in range(0,batch_size):
+#             nt.append(sample(tf.constant(wi)))
+#         return tf.cumsum(tf.concat(nt,axis=1),axis=0)
+
+#         # for wi in range(0,batch_size):
+#         #     # ti=tf.constant([0.0],dtype=t.dtype)
+#         #     # X=tf.constant([0.0],dtype=t.dtype)
+#         #     # J=tf.constant([0],dtype=tf.int32)
+#         #     # s=tf.constant([0],shape=(1,1),dtype=tf.int32)
+#         #     # out = tf.while_loop(condition, body, [ti,J,X,s],shape_invariants=[ti.get_shape(),J.get_shape(),X.get_shape(),tf.TensorShape([None,1])])
+#         #     # stf=tf.reshape(out[3][1:],(-1,))
+#         #     # stf=tf.cast(tf.concat(s,axis=0),dtype=tf.int32)
+#         #     stf=sample()
+#         #     onesInt=tf.ones_like(stf,dtype=tf.int32)
+#         #     onesFloat=tf.ones_like(stf,dtype=tf.float32)
+#         #     Nt=tf.tensor_scatter_nd_add(Nt,tf.stack([stf,tf.cast(wi,tf.int32)*onesInt],axis=1),onesFloat) #not the bottleneck
+#         # return tf.cumsum(Nt,axis=0)
