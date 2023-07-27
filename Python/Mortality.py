@@ -195,7 +195,7 @@ class DetermHostParasite(HostParasite):
 class Poisson(Mortality):
 
     @tf.function
-    def transformTFRagged(t,l,batch_size):
+    def inhomPoissonTF(t,l,batch_size):
 
         Nt=tf.zeros((tf.size(t)*batch_size,),dtype=t.dtype)
         LT=l[-1]
@@ -215,55 +215,13 @@ class Poisson(Mortality):
         ind=(tf.size(t)*tf.reshape(tf.range(0,batch_size,dtype=tf.int32),(-1,1)))+tf.RaggedTensor.from_row_lengths(tI,r)
         
         ind=tf.reshape(tf.concat(ind.to_tensor(),0),(-1,1))
-        Nt=tf.tensor_scatter_nd_add(Nt,ind,tf.ones(shape=(tf.size(ind)),dtype=t.dtype))
-        Nt=tf.transpose(tf.reshape(Nt,(batch_size,tf.size(t))))
+        Nt=tf.tensor_scatter_nd_add(Nt,ind,tf.ones(shape=(tf.size(ind)),dtype=t.dtype)) #add a lot of ones to t=0, <- assume no jumps at t=0 and remove later
+        Nt=tf.transpose(tf.reshape(Nt,(batch_size,tf.size(t)))) #row major -> also better memory layout for cumsum
         return tf.concat([tf.zeros((1,batch_size),dtype=t.dtype),tf.cumsum(Nt[1:,:],0)],axis=0)
-
-
-        # ind=tf.reshape(tf.concat(ind.to_list(),0),(-1,1))
-        # Nt=tf.tensor_scatter_nd_add(Nt,ind,tf.ones(shape=(njumps),dtype=t.dtype))
-        # Nt=tf.transpose(tf.reshape(Nt,(batch_size,tf.size(t))))
-        # return tf.cumsum(Nt,0)
     
-    @tf.function
-    def transformTFSingle(x):
-        t=x[:,0]
-        l=x[:,1]
-        N=t.shape[0]
-        Nt=tf.zeros((N,),dtype=t.dtype)
-        LT=l[-1]
-        r=tf.random.poisson((1,),LT,dtype=tf.int64)
-        # njumps=tf.cast(tf.reduce_sum(r),tf.int64)
-        u=tf.random.uniform((r[0],),0,1,t.dtype)
-        a=tf.zeros_like(u,dtype=t.dtype)
-        b=t[-1]*tf.ones_like(u,dtype=t.dtype)
-        for _ in range(0,10):
-            # tmp=Lfunc((a+b)/2)/LT
-            tmp=tfp.math.interp_regular_1d_grid((a+b)/2,t[0],t[-1],l)/LT
-            less=tf.cast(tmp<=u,tf.float32)
-            greater=1-less
-            a=(a+b)/2 *less + a * (1-less)
-            b=(a+b)/2 *greater + b * (1-greater)
-        Ftinv=tf.reshape((a+b)/2,(-1,1))
+    def inhomPoissonNP(t,l,batch_size,rng):
+        Lfunc= lambda x: np.interp(x,t.flatten(),l)
 
-        tI=tf.reshape(tf.cast(tf.argmax(Ftinv<tf.transpose(t),axis=1),dtype=tf.int64),(-1,1))
-        Nt=tf.tensor_scatter_nd_add(Nt,tI,tf.ones(shape=(r),dtype=t.dtype))
-
-        return Nt
-    
-    @tf.function
-    def transformTF(t,l,batch_size):
-        
-        x=tf.reshape(tf.concat([t,tf.reshape(l,(-1,1))],axis=1),(t.shape[0],2))
-        def transformTFSingle2(i):
-            return Poisson.transformTFSingle(x)
-
-        nt=tf.map_fn(transformTFSingle2,tf.range(0,batch_size,dtype=t.dtype),parallel_iterations=4)
-        # nt=tf.vectorized_map(transformTFSingle2,tf.ones((batch_size,),dtype=t.dtype))
-
-        return tf.cumsum(tf.transpose(nt),axis=0)
-    
-    def transformNP(t,Lfunc,batch_size,rng):
         t=t.reshape((-1,1))
         Nt=np.zeros((t.size,batch_size),dtype=t.dtype)
         LT=Lfunc(t[-1])
@@ -290,55 +248,137 @@ class Poisson(Mortality):
                 Nt[ti,wi]+=1
         return np.cumsum(Nt,0)
     
-    @nb.jit()
-    def transformNb(t,Lfunc,batch_size,Nt):
+    @tf.function
+    def populationSizeTF(n0,m,t,l,batch_size):
+        
+        Mt=tf.zeros((tf.size(t)*batch_size,),dtype=t.dtype)
+        Nt=tf.ones((tf.size(t)*batch_size,),dtype=t.dtype)
+        LT=l[-1]
+        r=tf.random.poisson((batch_size,),LT,dtype=tf.int32)
+        njumps=tf.cast(tf.reduce_sum(r),dtype=tf.int32)
+        u=tf.random.uniform((njumps,),0,1,dtype=t.dtype)
+        a=tf.zeros_like(u,dtype=t.dtype)
+        b=t[-1]*tf.ones_like(u,dtype=t.dtype)
+        for _ in range(0,10):
+            tmp=tfp.math.interp_regular_1d_grid((a+b)/2,t[0,0],t[-1,0],l)/LT
+            less=tf.cast(tmp<=u,t.dtype)
+            greater=1-less
+            a=(a+b)/2 *less + a * (1-less)
+            b=(a+b)/2 *greater + b * (1-greater)
+        Ftinv=tf.reshape((a+b)/2,(-1,1))
+        tI=tf.cast(tf.argmax(Ftinv<tf.transpose(t),axis=1),dtype=tf.int32)
+        ind=(tf.size(t)*tf.reshape(tf.range(0,batch_size,dtype=tf.int32),(-1,1)))+tf.RaggedTensor.from_row_lengths(tI,r)
+        
+        ind=tf.reshape(tf.concat(ind.to_tensor(),0),(-1,1))
+        update=tf.random.uniform((tf.size(ind),),0.995,1.0,dtype=t.dtype)
 
+        Mt=tf.tensor_scatter_nd_add(Mt,ind,tf.ones(shape=(tf.size(ind)),dtype=t.dtype)) #add a lot of ones to t=0, <- assume no jumps at t=0 and remove later
+        Nt=tf.tensor_scatter_nd_update(Nt,ind,update) #makes a mistake, no double jumps, but this is fine, these are rare events and 0.995^2=0.990 is close, otherwise high computational cost
+
+        Mt=tf.transpose(tf.reshape(Mt,(batch_size,tf.size(t)))) #row major -> also better memory layout for cumsum in axis 0
+        Nt=tf.transpose(tf.reshape(Nt,(batch_size,tf.size(t)))) #row major -> also better memory layout for cumprod in axis 0
+
+        Mt=tf.concat([tf.zeros((1,batch_size),dtype=t.dtype),tf.cumsum(Mt[1:,:],axis=0)],axis=0) #jump process
+        Nt=n0*tf.math.exp(-m*t)*tf.concat([tf.ones((1,batch_size),dtype=t.dtype),tf.math.cumprod(Nt[1:,:],0)],axis=0)#population process
+        return tf.stack([Nt,Mt],axis=2)
+    
+    def populationSizeNP(n0,m,t,l,batch_size,rng):
+        Lfunc= lambda x: np.interp(x,t.flatten(),l)
+
+        t=t.reshape((-1,1))
+        Mt=np.zeros((t.size,batch_size),dtype=t.dtype)
+        Nt=np.ones((t.size,batch_size),dtype=t.dtype)
         LT=Lfunc(t[-1])
-        r=np.random.poisson(LT[0],(batch_size,)).astype(np.int32)
+        r=rng.poisson(LT,(batch_size,)).astype(np.int32)
         njumps=int(np.sum(r))
-        u=np.random.uniform(0,1,(njumps,1)).astype(t.dtype)
-        a=np.zeros_like(u).astype(t.dtype)
-        b=t[-1]*np.ones_like(u).astype(t.dtype)
+        u=rng.uniform(0,1,(njumps,1)).astype(t.dtype)
+        a=np.zeros_like(u,dtype=t.dtype)
+        b=t[-1]*np.ones_like(u,dtype=t.dtype)
         for _ in range(0,10):
             tmp=Lfunc((a+b)/2)/LT
-            for j in range(0,njumps):
-                if tmp[j]<=u[j]:
-                    a[j]=(a[j]+b[j])/2
-                else:
-                    b[j]=(a[j]+b[j])/2
+            less=tmp<=u
+            greater=np.logical_not(less)
+            a[less]=(a[less]+b[less])/2
+            b[greater]=(a[greater]+b[greater])/2
         Ftinv=(a+b)/2
 
         lastJumps=0
-        tI=np.zeros_like(Ftinv).astype(np.int32)
-        for i in range(0,njumps):
-            tI[i]=np.argmax(Ftinv[i]<t)
- 
-        for wi in nb.prange(0,batch_size):
+        tI=np.argmax(Ftinv<t.T,axis=1)
+        k=0
+        X=rng.uniform(0.995,1.0,(njumps,)).astype(t.dtype)
+        for wi in range(0,batch_size):
             currJumps=tI[lastJumps:lastJumps+r[wi]]
             lastJumps=lastJumps+r[wi]
             for ji in range(0,currJumps.size):
                 ti=currJumps[ji]
-                Nt[ti,wi]+=1
-        return Nt
-    
-
-        
+                Nt[ti,wi]*=X[k]
+                Mt[ti,wi]+=1
+                k+=1
+        return np.stack([n0*np.exp(-m*t)*np.cumprod(Nt,0),np.cumsum(Mt,0)],axis=2)
 
     def __init__(self, 
+                 H0:float,
+                 m:Union[np.ndarray,tf.Tensor],
                  t:Union[np.ndarray,tf.Tensor],
-                 params:Union[np.ndarray,tf.Tensor],
-                 l:Union[np.ndarray,tf.Tensor],
-                 pwT:Union[np.ndarray,tf.Tensor],
+                 tData:Union[np.ndarray,tf.Tensor],
+                 dm:Union[np.ndarray,tf.Tensor],
                  rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
-        super().__init__(t, rng,True,1)
+        super().__init__(t,True,1,rng)
+        
+        dt=np.array(t[-1]/(t.shape[0]-1))
         if type(t)==np.ndarray:
-            self.params=params
-            self.l=l
-            self.pwT=pwT
+            self.m=m
+            self.n0=H0
+            self.l=(np.cumsum(np.interp(t,tData,dm),axis=0)*dt).flatten()
+            # self._inhomPoisson=Poisson.inhomPoissonNP
+            self._populationSize=Poisson.populationSizeNP
         else:
-            self.params=tf.constant(params)
-            self.l=tf.constant(l)
-            self.pwT=tf.constant(pwT)
+            self.m=tf.constant(m,dtype=t.dtype)
+            self.n0=H0
+            lfunc= (np.cumsum(np.interp(np.array(t),np.array(tData),np.array(dm)),axis=0)*dt).flatten()
+            self.l=tf.constant(lfunc,dtype=t.dtype)
+            # self._inhomPoisson=Poisson.inhomPoissonTF
+            self._populationSize=Poisson.populationSizeTF
+
+    def sample(self, batch_size: int):
+        if type(self.t)==np.ndarray:
+            return self._populationSize(self.n0,self.m,self.t,self.l,batch_size,self.rng)
+        else:
+            return self._populationSize(self.n0,self.m,self.t,self.l,batch_size)
+        
+    def populationSize(self,
+                       M:Union[np.ndarray,tf.Tensor] # host + jump process
+                       ):
+        return M[:,:,0]
+    
+    def treatmentCost(self,
+                       M:Union[np.ndarray,tf.Tensor] # host + jump process
+                       ):
+        return 0.01*M[:,:,1]
+
+class DetermPoisson(Poisson):
+    def __init__(self,
+                 H0:float,
+                 m:Union[np.ndarray,tf.Tensor],
+                 t:Union[np.ndarray,tf.Tensor],
+                 tData:Union[np.ndarray,tf.Tensor],
+                 dm:Union[np.ndarray,tf.Tensor],
+                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
+        super().__init__(H0,m,t,tData,dm,rng)
+        self.isStoch=False
+        self.d=0
+
+    def populationSize(self, M):
+        if type(self.t)==np.ndarray:
+            return np.mean(super().populationSize(M),axis=1,keepdims=True)
+        else:
+            return tf.reduce_mean(super().populationSize(M),axis=1,keepdims=True)
+        
+    def treatmentCost(self, M):
+        if type(self.t)==np.ndarray:
+            return np.mean(super().treatmentCost(M),axis=1,keepdims=True)
+        else:
+            return tf.reduce_mean(super().treatmentCost(M),axis=1,keepdims=True)
 
 
 if __name__=="__main__":
@@ -379,7 +419,7 @@ if __name__=="__main__":
     batch_size=2**12
     dtype=np.float32
     t=np.linspace(0,T,N,endpoint=True,dtype=dtype).reshape((-1,1))
-    # t=tf.constant(t)
+    t=tf.constant(t)
     params=[0.05,0.1,8.71,0.05]
     beta=[0.0835,0.0244]
     H0=10000.0
@@ -390,49 +430,49 @@ if __name__=="__main__":
 ],dtype=np.float32).reshape((-1,))
     
     
-    dt=T/(N-1)
-    lfunc= (np.cumsum(np.interp(t,tData[1:],dm),axis=0)*dt).flatten()
+    # dt=T/(N-1)
+    # lfunc= (np.cumsum(np.interp(t,tData[1:],dm),axis=0)*dt).flatten()
 
-    Lfunc= lambda x: np.interp(x,t.flatten(),lfunc)
+    # Lfunc= lambda x: np.interp(x,t.flatten(),lfunc)
 
-    rngNP=np.random.default_rng(0)
-    rngTF=tf.random.Generator.from_seed(0)
+    # rngNP=np.random.default_rng(0)
+    # rngTF=tf.random.Generator.from_seed(0)
 
+    # tic=time.time()
+    # Nt=Poisson.inhomPoissonNP(t,lfunc,batch_size,rngNP)
+    # ctime=time.time()-tic
+    # print(f'Elapsed time {ctime} s')
+    # print(np.mean(Nt[-1,:]))
+    # print(np.mean((np.mean(Nt,axis=1)-lfunc)**2))
+
+    # tic=time.time()
+    # Nt=Poisson.inhomPoissonTF(tf.constant(t),tf.constant(lfunc,dtype=t.dtype),batch_size)
+    # ctime=time.time()-tic
+    # print(f'Elapsed time {ctime} s')
+    # print(np.mean(Nt[-1,:]))
+
+    # tic=time.time()
+    # Nt=Poisson.inhomPoissonTF(tf.constant(t),tf.constant(lfunc,dtype=t.dtype),batch_size)
+    # ctime=time.time()-tic
+    # print(f'Elapsed time {ctime} s')
+    # print(np.mean(Nt[-1,:]))
+
+    # print(np.mean((np.mean(Nt,axis=1)-lfunc)**2))
+
+    mort = Poisson(H0,params[0],t,tData[1:],dm)
     tic=time.time()
-    Nt=Poisson.transformNP(t,Lfunc,batch_size,rngNP)
+    HM=mort.sample(batch_size)
     ctime=time.time()-tic
     print(f'Elapsed time {ctime} s')
-    print(np.mean(Nt[-1,:]))
-
+    print(HM.shape)
+    print(np.mean(HM[-1,:,0]))
+    print(np.mean(HM[-1,:,1]))
     tic=time.time()
-    Nt=Poisson.transformTFRagged(tf.constant(t),tf.constant(lfunc,dtype=t.dtype),batch_size)
+    HM=mort.sample(batch_size)
     ctime=time.time()-tic
     print(f'Elapsed time {ctime} s')
-    print(np.mean(Nt[-1,:]))
-
-    tic=time.time()
-    Nt=Poisson.transformTFRagged(tf.constant(t),tf.constant(lfunc,dtype=t.dtype),batch_size)
-    ctime=time.time()-tic
-    print(f'Elapsed time {ctime} s')
-    print(np.mean(Nt[-1,:]))
-    
-    with tf.device('cpu:0'):
-        tic=time.time()
-        Nt=Poisson.transformTF(tf.constant(t),tf.constant(lfunc,dtype=t.dtype),batch_size)
-        ctime=time.time()-tic
-        print(f'Elapsed time {ctime} s')
-        print(np.mean(Nt[-1,:]))
-        tic=time.time()
-        Nt=Poisson.transformTF(tf.constant(t),tf.constant(lfunc,dtype=t.dtype),batch_size)
-        ctime=time.time()-tic
-        print(f'Elapsed time {ctime} s')
-        print(np.mean(Nt[-1,:]))
-        tic=time.time()
-        Nt=Poisson.transformTF(tf.constant(t),tf.constant(lfunc,dtype=t.dtype),batch_size)
-        ctime=time.time()-tic
-        print(f'Elapsed time {ctime} s')
-        print(np.mean(Nt[-1,:]))
-        print(Nt[-1,0:5])
+    print(np.mean(HM[-1,:,0]))
+    print(np.mean(HM[-1,:,1]))
 
 
 
