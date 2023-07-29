@@ -11,11 +11,13 @@ class Mortality():
                  t:Union[np.ndarray,tf.Tensor],
                  isStoch:bool,
                  d:int,
-                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
+                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None,
+                 treatmentCosts:float=0.01):
         self.t=t
         self.dtype=t.dtype
         self.isStoch=isStoch
         self.d=d
+        self.treatmentCosts=treatmentCosts
         if rng is None:
             if type(t)==np.ndarray:
                 self.rng=np.random.default_rng()
@@ -34,7 +36,7 @@ class Mortality():
         pass
 
     def treatmentCost(self,M):
-        return 0
+        return self.treatmentCosts
 
 
 class ConstMortatlity(Mortality):
@@ -49,8 +51,9 @@ class ConstMortatlity(Mortality):
                  t:Union[np.ndarray,tf.Tensor],
                  n0:int,
                  m:float,
-                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
-        super().__init__(t,False,0,rng)
+                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None,
+                 treatmentCosts:float=0.3):
+        super().__init__(t,False,0,rng,treatmentCosts)
         if type(t)==np.ndarray:
             self.m=m
             self.n0=n0
@@ -125,9 +128,10 @@ class HostParasite(Mortality):
                  beta,
                  H0:float,
                  P0:float,
-                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
+                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None,
+                 treatmentCosts:float=0.01):
 
-        super().__init__(t,True,2,rng)
+        super().__init__(t,True,2,rng,treatmentCosts)
         self.threshold=0.5
         if type(t)==np.ndarray:
             self.beta=beta
@@ -166,7 +170,7 @@ class HostParasite(Mortality):
     def treatmentCost(self,
                        M:Union[np.ndarray,tf.Tensor] # host process
                        ):
-        return 0.01*M[:,:,-1]
+        return self.treatmentCosts*M[:,:,-1]
     
 class DetermHostParasite(HostParasite):
     def __init__(self,
@@ -175,8 +179,9 @@ class DetermHostParasite(HostParasite):
                  beta,
                  H0:float,
                  P0:float,
-                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
-        super().__init__(t,params,beta,H0,P0,rng)
+                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None,
+                 treatmentCosts:float=0.01):
+        super().__init__(t,params,beta,H0,P0,rng,treatmentCosts)
         self.isStoch=False
         self.d=0
 
@@ -322,8 +327,9 @@ class Poisson(Mortality):
                  t:Union[np.ndarray,tf.Tensor],
                  tData:Union[np.ndarray,tf.Tensor],
                  dm:Union[np.ndarray,tf.Tensor],
-                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
-        super().__init__(t,True,1,rng)
+                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None,
+                 treatmentCosts:float=0.01):
+        super().__init__(t,True,1,rng,treatmentCosts)
         
         dt=np.array(t[-1]/(t.shape[0]-1))
         if type(t)==np.ndarray:
@@ -354,7 +360,8 @@ class Poisson(Mortality):
     def treatmentCost(self,
                        M:Union[np.ndarray,tf.Tensor] # host + jump process
                        ):
-        return 0.01*M[:,:,1]
+        return self.treatmentCosts*M[:,:,1]
+
 
 class DetermPoisson(Poisson):
     def __init__(self,
@@ -363,8 +370,9 @@ class DetermPoisson(Poisson):
                  t:Union[np.ndarray,tf.Tensor],
                  tData:Union[np.ndarray,tf.Tensor],
                  dm:Union[np.ndarray,tf.Tensor],
-                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None):
-        super().__init__(H0,m,t,tData,dm,rng)
+                 rng:Optional[Union[np.random.Generator,tf.random.Generator]]=None,
+                 treatmentCosts:float=0.01):
+        super().__init__(H0,m,t,tData,dm,rng,treatmentCosts)
         self.isStoch=False
         self.d=0
 

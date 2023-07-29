@@ -1,6 +1,6 @@
 import numpy as np
 from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression,Ridge
 
 import tensorflow as tf
 from tensorflow.keras import Model, Sequential, Input
@@ -34,6 +34,7 @@ class Polynomial(Basis):
         self.deg=deg
         self.poly = PolynomialFeatures(deg)
         self.poly_reg_model = LinearRegression()
+        # self.poly_reg_model = Ridge(alpha=1e-3)
 
     def fit_eval(self,X,Y):
         poly_features = self.poly.fit_transform(X)
