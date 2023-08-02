@@ -174,7 +174,7 @@ class Schwartz2Factor(Commodity):
             self._schwartz2Factor=Schwartz2Factor.schwartz2factorTF
 
     def sample(self,batch_size:int)->np.ndarray:
-        W=self._brownianMotion(self.t[-1,0],self.t.shape[0],batch_size,d=self._d,rho=self.params[-3],rng=self.rng)
+        W=self._brownianMotion(self.t[-1,0],self.t.shape[0],batch_size,d=self._d,rho=self.params[-3],dtype=self.dtype,rng=self.rng)
         return self._schwartz2Factor(*self.params[-2:],*self.params[:-3],self.t,W,dtype=self.dtype)
 
 if __name__=="__main__":
