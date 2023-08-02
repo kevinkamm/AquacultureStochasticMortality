@@ -28,12 +28,60 @@ Calibration:
 
 
 ## Fish Farm Objects
+The Tensor-layout in all classes is assumed to be Time x Samples x Processes.
+
 The fish farm can be customized completely by subclassing the following classes and overwriting their main class functions:
 - [Harvesting Costs](Python/Harvest.py)
-- [Feeding Costs](Python/Feed.py)
+    - Abstract class: Harvest
+    - Abstract methods:
+        - sample: takes batch_size as input
+        - setgen: sets random number generator for numpy or tensorflow
+        - cost: takes output of sample as input
+        - totalCost: takes output of sample as input, as well as current biomass
+    - Currently implemented:
+        - Harvest: implements constant harvesting costs
 - [Salmon Growth](Python/Growth.py)
+    - Abstract class: Growth
+    - Abstract methods:
+        - sample: takes batch_size as input
+        - setgen: sets random number generator for numpy or tensorflow
+        - weight: takes output of sample as input
+    - Currently implemented:
+        - Bertalanffy: Bertalanffy's deterministic growth model
 - [Salmon Price](Python/Price.py)
+    - Abstract class: Price
+    - Abstract methods:
+        - sample: takes batch_size as input
+        - setgen: sets random number generator for numpy or tensorflow
+        - price: takes output of sample as input
+    - Currently implemented:
+        - Price: implements price model by using [commodity](Python/Commodity.py) spot price model, assumes that spot price has the following dimensions: time x simulation x factors, where the first factor dimension is the spot price and e.g. the second is the convenience yield
+- [Feeding Costs](Python/Feed.py)
+    - Abstract class: Feed
+    - Abstract methods:
+        - sample: takes batch_size as input
+        - setgen: sets random number generator for numpy or tensorflow
+        - cost: takes output of sample as input
+        - cumtotalCost: takes output of sample as input, as well as current weight and current number of fish
+    - Currently implemented:
+        - Feed: implements constant feeding costs
+        - StochFeed: implements feeding costs depending on [commodity](Python/Commodity.py) spot price model, assumes that spot price has the following dimensions: time x simulation x factors, where the first factor dimension is the spot price and e.g. the second is the convenience yield
+        - DetermFeed: is the expectation of StochFeed
 - [Mortality](Python/Mortality.py)
+    - Abstract class: Mortality
+    - Abstract methods:
+        - sample: takes batch_size as input
+        - setgen: sets random number generator for numpy or tensorflow
+        - populationSize: takes output of sample as input
+        - treatmentCosts: takes output of sample as input
+    - Currently implemented:
+        - ConstMortality: constant deterministic mortality model: $H_0 \exp(-m t)$
+        - HostParasite: stochastic host-parasite model
+        - DetermHostParasite: expectation of HostParasite
+        - Poisson: stochastic Poisson model
+        - DetermPoisson: expectation of Poisson
+
+You can use any combination of the currently implemented models by selecting it in [main](Python/main.m).
 
 
 # Data
