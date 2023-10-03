@@ -107,6 +107,7 @@ class fishFarm():
         N = self.mort.sample(batch_size) # sample processes
         nt = self.mort.populationSize(N) # compute population size
         tt = self.mort.treatmentCost(N) # compute treatment cost
+
         if self.mort.isStoch:
             N=N[:,:,:self.mort.d]
         else:
@@ -143,7 +144,7 @@ class fishFarm():
         ht = self._coarse(ht,self.stride)
         cumft = self._coarse(cumft,self.stride)
 
-        VH=(1-tt)*(pt*bt-ht) # harvesting value
+        VH=(1-tt)*pt*bt-ht # harvesting value
         V=self.discount*VH-cumft # total value of farm
 
         return X,V,VH,ft
