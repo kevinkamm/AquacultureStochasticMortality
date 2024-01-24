@@ -1,10 +1,10 @@
 # Aquaculture with Stochastic Mortality
-This repository is complementing [TODO](https://www.arxiv.org/) for investigating the effect of stochastic mortality to optimal harvesting rules in aquaculture farms. In particular, we chose salmon farms for our investigation.
+This repository is complementing [On the Impact of Feeding Cost Risk in Aquaculture Valuation and Decision Making](https://arxiv.org/abs/2309.02970) for investigating the effect of stochastic mortality to optimal harvesting rules in aquaculture farms. In particular, we chose salmon farms for our investigation.
 
 ## Installation
 There is no installation required, please download the code and run the main files. For Python you need all the necessary dependencies to run Tensorflow 2.x. There is also a Jupyter notebook available for testing the Python code in Colab.
 
-[![Open In Colab TODO](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kevinkamm/AquacultureStochasticFeeding/blob/main/Python/main.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kevinkamm/AquacultureStochasticMortality/blob/main/Python/main.ipynb)
 
 ## Code and Usage
 The code is structured as follows: 
