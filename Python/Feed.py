@@ -71,7 +71,7 @@ class Feed():
         pass
 
     def setgen(self,gen:Union[tf.random.Generator,np.random.Generator]):
-        self.C.setgen(gen)
+        pass
 
     def cost(self,
              C:Union[np.ndarray,tf.Tensor], # commodity process
@@ -135,6 +135,9 @@ class StochFeed(Feed):
                batch_size:int)->np.ndarray:
         return self.C.sample(batch_size)
     
+    def setgen(self,gen:Union[tf.random.Generator,np.random.Generator]):
+        self.C.setgen(gen)
+    
 class DetermFeed(StochFeed):
 
     def __init__(self,
@@ -155,3 +158,6 @@ class DetermFeed(StochFeed):
             return np.mean(super().cost(C, wt, nt),axis=1,keepdims=True)
         else:
             return tf.reduce_mean(super().cost(C, wt, nt),axis=1,keepdims=True)
+        
+    def setgen(self,gen:Union[tf.random.Generator,np.random.Generator]):
+        self.C.setgen(gen)
