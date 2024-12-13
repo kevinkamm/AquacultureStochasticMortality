@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# @Author: Kevin Kamm
+# @Date:   2023-07-17 13:56:17
+# @Last Modified by:   Kevin Kamm
+# @Last Modified time: 2024-12-13 11:20:55
 import numpy as np
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression,Ridge
@@ -258,7 +263,7 @@ class LSMC(OptimalStopping):
         dt=self.t[-1]/(N-1)
         discount=np.exp(-self.r*dt)
         # Glassermann p. 461
-        for ti in range(N-1,0,-1): #[N-1,...,1]
+        for ti in range(N-2,0,-1): #[N-2,...,1]
             if ft is not None:
                 VC=discount * self.b.fit_eval(X[ti,:,:],Vtmp) -ft[ti]*dt
                 Vtmp=discount*Vtmp -ft[ti]*dt # Longstaff-Schwartz
@@ -271,6 +276,19 @@ class LSMC(OptimalStopping):
             exercise[ind]=ti
 
             Vtmp[ind]=VH[ti,ind]
+        ti=ti-1
+        if ft is not None:
+            VC=discount * tf.reduce_mean(Vtmp,0,keepdims=True) -ft[ti]*dt
+            Vtmp=discount*Vtmp -ft[ti]*dt # Longstaff-Schwartz
+            #Vtmp=VC # Tsitsiklis and Van Roy
+        else:
+            VC= discount * tf.reduce_mean(Vtmp,0,keepdims=True)
+            Vtmp=discount*Vtmp # Longstaff-Schwartz
+            #Vtmp=VC # Tsitsiklis and Van Roy
+        ind = VC <= VH[ti,:]
+        exercise[ind]=ti
+
+        Vtmp[ind]=VH[ti,ind]
 
         Vtau=np.empty_like(Vtmp)
         tau=np.empty_like(Vtmp)

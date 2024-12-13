@@ -1,0 +1,8 @@
+Stoch Feeding and Stoch Mortality as baseline
+	Mean tau: [1.95455742] with mean 2438227.446514261 with ratio 1.0
+	Mean tau: [1.95207977] with mean 2397879.336507668 with ratio 1.016826580634102
+	Mean tau: [1.9723793] with mean 2373462.523731078 with ratio 1.0272871057097512
+	Mean tau: [1.9621624] with mean 2334518.196109341 with ratio 1.0444242630354132
+Determ Feeding and Stoch Mortality as baseline
+	Mean tau: [1.9723793] with mean 2374241.975900398 with ratio 1.0
+	Mean tau: [1.9621624] with mean 2335366.8411154924 with ratio 1.0166462647754033
